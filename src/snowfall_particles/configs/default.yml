@@ -1,0 +1,92 @@
+sim:
+  dim: 3
+  n_grid: 64
+  steps: 25
+  dt: 4.0e-4
+  n_particles: 1000
+  gravity: [0.0, -9.8, 0.0]
+  bound: 3
+
+material:
+  p_rho: 1.0
+  E: 1000.0
+  nu: 0.2
+
+sdf:
+  res: 64
+  cache_enabled: true
+
+render:
+  resolution: [1280, 720]
+  vsync: true
+  particles_radius: 0.01
+  camera:
+    position: [0.5, 1.0, 1.95]
+    lookat: [0.5, 0.5, 0.5]
+    fov: 55
+  lights:
+    ambient: [0.18, 0.18, 0.18]
+    point_lights:
+      - pos: [0.5, 1.5, 0.5]
+        color: [0.75, 0.75, 0.75]
+      - pos: [0.5, 1.5, 1.5]
+        color: [0.75, 0.75, 0.75]
+      - pos: [0.5, 0.05, 0.5]
+        color: [0.35, 0.35, 0.35]
+
+particles:
+  presets:
+    - name: Single Dam Break
+      volumes:
+        - kind: cube
+          minimum: [0.55, 0.45, 0.55]
+          size: [0.4, 0.5, 0.4]
+          material: water
+    - name: Double Dam Break
+      volumes:
+        - kind: cube
+          minimum: [0.05, 0.05, 0.05]
+          size: [0.3, 0.4, 0.3]
+          material: water
+        - kind: cube
+          minimum: [0.65, 0.05, 0.65]
+          size: [0.3, 0.4, 0.3]
+          material: water
+    - name: Snow
+      volumes:
+        - kind: cube
+          minimum: [0.2, 0.5, 0.2]
+          size: [0.6, 0.4, 0.6]
+          material: snow
+    - name: Water Snow Jelly
+      volumes:
+        - kind: cube
+          minimum: [0.6, 0.05, 0.6]
+          size: [0.25, 0.25, 0.25]
+          material: water
+        - kind: cube
+          minimum: [0.35, 0.35, 0.35]
+          size: [0.25, 0.25, 0.25]
+          material: snow
+        - kind: cube
+          minimum: [0.05, 0.6, 0.05]
+          size: [0.25, 0.25, 0.25]
+          material: jelly
+
+obstacles:
+  presets:
+    - name: Cube
+      kind: box
+      half_xz: 0.2
+      height: 0.4
+      center_xz: [0.5, 0.5]
+    - name: Sphere
+      kind: mesh
+      path: assets/sphere.obj
+      scale: 0.3
+      center: [0.5, 0.2, 0.5]
+    - name: Old Main
+      kind: mesh
+      path: assets/old_main_Meshy.obj
+      scale: 0.4
+      center: [0.5, 0.2, 0.5]

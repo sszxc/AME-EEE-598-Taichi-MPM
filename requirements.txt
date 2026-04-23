@@ -1,0 +1,6 @@
+taichi
+pyyaml
+numpy
+trimesh
+rtree
+scipy

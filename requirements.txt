@@ -1,6 +1,9 @@
 taichi
 pyyaml
+questionary
+tqdm
 numpy
+plotly
 trimesh
 rtree
 scipy

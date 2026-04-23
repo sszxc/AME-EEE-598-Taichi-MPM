@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import math
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import taichi as ti
+from tqdm import tqdm
 
 from snowfall_particles.config import Config
 from snowfall_particles.mpm.solver import MPMSolver, MaterialParams
@@ -132,8 +135,9 @@ class ObstacleRuntime:
 
 
 class MpmApp:
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, *, headless: bool = False):
         self.cfg = cfg
+        self.headless = bool(headless)
         mat = MaterialParams(p_rho=cfg.material.p_rho, E=cfg.material.E, nu=cfg.material.nu)
         self.solver = MPMSolver(
             dim=cfg.sim.dim,
@@ -160,12 +164,16 @@ class MpmApp:
         self.curr_obstacle_preset_id = 0
         self._obstacles: list[ObstacleRuntime] = self._build_obstacle_geometries()
 
-        self.tank_vertices, self.tank_indices, self.tank_colors = build_unit_cube_tank_fields()
-
-        self._init_window()
-        self._init_scene()
-        self.init_sim()
-        self.sync_obstacle_collision()
+        if self.headless:
+            self.tank_vertices = self.tank_indices = self.tank_colors = None
+            self.window = self.canvas = self.gui = self.scene = None
+            self.camera = None
+        else:
+            self.tank_vertices, self.tank_indices, self.tank_colors = build_unit_cube_tank_fields()
+            self._init_window()
+            self._init_scene()
+            self.init_sim()
+            self.sync_obstacle_collision()
 
     def _init_window(self):
         res = self.cfg.render.resolution
@@ -303,6 +311,8 @@ class MpmApp:
         self.canvas.scene(self.scene)
 
     def run(self):
+        if self.headless:
+            raise RuntimeError("run() requires GUI mode (headless=False)")
         while self.window.running:
             if not self.paused:
                 self.solver.step_frame()
@@ -310,7 +320,61 @@ class MpmApp:
             self.show_options()
             self.window.show()
 
+    def run_offline_export(
+        self,
+        *,
+        output_path: Path,
+        duration_sim_s: float,
+        particle_preset_idx: int,
+        obstacle_preset_idx: int,
+    ) -> None:
+        if not self.headless:
+            raise RuntimeError("run_offline_export requires headless=True")
+        self.curr_preset_id = int(particle_preset_idx)
+        self.curr_obstacle_preset_id = int(obstacle_preset_idx)
+        self.init_sim()
+        self.sync_obstacle_collision()
 
-def create_app(cfg: Config) -> MpmApp:
-    return MpmApp(cfg)
+        dt_frame = float(self.cfg.sim.steps) * float(self.cfg.sim.dt)
+        n_particles = int(self.cfg.sim.n_particles)
+        max_steps = max(1, int(math.ceil(duration_sim_s / dt_frame)))
+        buf_len = max_steps + 1
+        positions = np.empty((buf_len, n_particles, 3), dtype=np.float32)
+
+        used = self.solver.F_used.to_numpy().astype(np.int8, copy=False)
+        positions[0] = self.solver.F_x.to_numpy().astype(np.float32, copy=False)
+
+        row = 1
+        with tqdm(
+            total=max_steps,
+            desc="Offline export",
+            unit="frame",
+            file=sys.stderr,
+        ) as pbar:
+            # Fixed max_steps iterations (do not gate on float accum vs duration):
+            # floating-point drift can leave accum < duration after max_steps steps
+            # and cause an extra write past positions.shape[0]-1.
+            for _ in range(max_steps):
+                self.solver.step_frame()
+                positions[row] = self.solver.F_x.to_numpy().astype(np.float32, copy=False)
+                row += 1
+                pbar.update(1)
+
+        positions_out = positions[:row].copy()
+        particle_name = self.preset_names[self.curr_preset_id]
+        obstacle_name = self.obstacle_presets[self.curr_obstacle_preset_id].name
+
+        np.savez_compressed(
+            output_path,
+            positions=positions_out,
+            used=used,
+            dt_frame=np.float32(dt_frame),
+            simulation_duration_seconds=np.float32(duration_sim_s),
+            particle_preset=np.array(particle_name),
+            obstacle_preset=np.array(obstacle_name),
+        )
+
+
+def create_app(cfg: Config, *, headless: bool = False) -> MpmApp:
+    return MpmApp(cfg, headless=headless)
 

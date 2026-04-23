@@ -60,6 +60,13 @@ class SdfConfig:
 
 
 @dataclass(frozen=True)
+class OfflineConfig:
+    """Used with ``--offline``; see ``offline.simulation_duration_seconds`` in YAML."""
+
+    simulation_duration_seconds: float
+
+
+@dataclass(frozen=True)
 class Config:
     arch: TaichiArch
     sim: SimConfig
@@ -69,6 +76,7 @@ class Config:
     particles: dict[str, Any]
     obstacles: dict[str, Any]
     base_dir: Path
+    offline: OfflineConfig | None
 
 
 def _require(cond: bool, msg: str) -> None:
@@ -149,6 +157,13 @@ def load_config(path: str | Path) -> Config:
     particles = data.get("particles", {}) or {}
     obstacles = data.get("obstacles", {}) or {}
 
+    offline_raw = data.get("offline")
+    offline_cfg: OfflineConfig | None = None
+    if isinstance(offline_raw, dict):
+        dur = offline_raw.get("simulation_duration_seconds")
+        if dur is not None:
+            offline_cfg = OfflineConfig(simulation_duration_seconds=float(dur))
+
     return Config(
         arch=arch,  # type: ignore[arg-type]
         sim=sim_cfg,
@@ -158,5 +173,6 @@ def load_config(path: str | Path) -> Config:
         particles=particles,
         obstacles=obstacles,
         base_dir=_PROJECT_ROOT,
+        offline=offline_cfg,
     )
 

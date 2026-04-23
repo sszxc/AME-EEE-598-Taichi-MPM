@@ -16,6 +16,10 @@ sdf:
   res: 64
   cache_enabled: true
 
+# Total simulated time to record when using ``--offline`` (one sample per GUI-equivalent frame).
+offline:
+  simulation_duration_seconds: 2.0
+
 render:
   resolution: [1280, 720]
   vsync: true

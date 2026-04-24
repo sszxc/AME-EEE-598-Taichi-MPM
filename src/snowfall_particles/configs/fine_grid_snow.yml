@@ -1,10 +1,10 @@
 sim:
   dim: 3
-  n_grid: 256
+  n_grid: 128
   steps: 25
   dt: 1.0e-4
-  n_particles: 1000
-  gravity: [0.0, -9.8, 0.0]
+  n_particles: 2000
+  gravity: [0.0, -3., 0.0]
   bound: 3
 
 material:
@@ -13,7 +13,7 @@ material:
   nu: 0.2
 
 sdf:
-  res: 256
+  res: 128
   cache_enabled: true
 
 offline:
@@ -24,7 +24,7 @@ render:
   vsync: true
   particles_radius: 0.002
   camera:
-    position: [0.5, 1.0, 1.95]
+    position: [0.5, 0.7, 1.95]
     lookat: [0.5, 0.5, 0.5]
     fov: 55
   lights:
@@ -42,8 +42,8 @@ particles:
     - name: Snow
       volumes:
         - kind: cube
-          minimum: [0.05, 0.5, 0.05]
-          size: [0.9, 0.4, 0.9]
+          minimum: [0.05, 0.3, 0.05]
+          size: [0.9, 0.6, 0.9]
           material: snow
 
 obstacles:

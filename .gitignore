@@ -1,3 +1,5 @@
 __pycache__/
 imgui.ini
 outputs/
+.DS_Store
+cache_*

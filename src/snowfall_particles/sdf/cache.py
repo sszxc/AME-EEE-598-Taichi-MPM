@@ -53,7 +53,7 @@ def _request_hash(req: MeshSdfRequest) -> str:
 def cache_path_for(req: MeshSdfRequest) -> Path:
     key = _request_hash(req)
     # alongside mesh; "np* format": use npz container
-    return req.mesh_path.with_name(f"{req.mesh_path.name}.sdf_res{req.sdf_res}.{key}.npz")
+    return req.mesh_path.with_name(f"cache_{req.mesh_path.name}.sdf_res{req.sdf_res}.{key}.npz")
 
 
 def load_cached_sdf(path: Path) -> np.ndarray | None:

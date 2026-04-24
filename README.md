@@ -3,34 +3,31 @@
 ## Dependencies
 
 ```bash
+conda create -n taichi python=3.13.12
+conda activate taichi
 pip install -r requirements.txt
 ```
 
 ## Snowfall particles
 
+![Snowfall particles](media/Screenshot_snowfall.png)
+
 ```bash
 python src/snowfall_particles/snowfall_simulate.py --config configs/default.yml
-python src/snowfall_particles/snowfall_simulate.py --offline --output outputs/snow.npz
+python src/snowfall_particles/snowfall_simulate.py --offline --config configs/fine_grid_snow.yml --output outputs/snow.npz
 python src/snowfall_particles/visualize_output.py outputs/snow.npz
 ```
 
-### Configuration
+- Default settings are in [`configs/default.yml`](configs/default.yml), you can edit `n_grid` / `steps` / `dt` / `n_particles`, gravity, rendering options, obstacle lists, and more there
+- Grid SDF cache enabled: same directory as the mesh file (alongside the mesh), naming `cache_<mesh_filename>.sdf_res<res>.<key>.npz`, derived from mesh content SHA256 together with `(sdf_res, scale, center)`; a new file is created when content or parameters change.
+- Offline mode will save the particle positions to an .npz file for future rendering. The data size of 2000 particles for 2 seconds is about 14 MB.
 
-- Default settings are in [`configs/default.yml`](configs/default.yml)
-- You can edit `n_grid` / `steps` / `dt` / `n_particles`, gravity, rendering options, obstacle lists, and more there
+### TODO 
 
-### Grid SDF cache
+- [ ] Add random wind force
+- [ ] Add max velocity limit
 
-- **Location**: Same directory as the mesh file (alongside the mesh)
-- **Naming**: `<mesh_filename>.sdf_res<res>.<key>.npz`
-  - Example: `assets/sphere.obj.sdf_res128.0123abcd4567ef89.npz`
-- **Key**: Derived from mesh content SHA256 together with `(sdf_res, scale, center)`; a new file is created when content or parameters change
-- **Clearing cache**: Delete the corresponding `.npz` files
 
 ## Walking tree controller
 
 ## Skeleton to tree-shaped mesh
-
-## TODO
-
-- [ ] environment.yml

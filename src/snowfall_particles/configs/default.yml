@@ -25,7 +25,7 @@ render:
   vsync: true
   particles_radius: 0.01
   camera:
-    position: [0.5, 1.0, 1.95]
+    position: [0.5, 0.7, 1.95]
     lookat: [0.5, 0.5, 0.5]
     fov: 55
   lights:

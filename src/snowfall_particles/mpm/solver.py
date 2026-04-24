@@ -75,6 +75,13 @@ class MPMSolver:
 
         self.neighbour = (3,) * dim
 
+        # Per-frame stats (computed on GPU/CPU via kernel; cheap to read from Python).
+        self.S_active = ti.field(dtype=ti.i32, shape=())
+        self.S_speed_rms = ti.field(dtype=ti.f32, shape=())
+        self.S_speed_max = ti.field(dtype=ti.f32, shape=())
+        self.S_y_min = ti.field(dtype=ti.f32, shape=())
+        self.S_y_max = ti.field(dtype=ti.f32, shape=())
+
     @ti.func
     def obs_phi_sample_trilinear(self, p):
         R = float(self.n_grid)
@@ -284,4 +291,37 @@ class MPMSolver:
         for _ in range(self.steps):
             self.substep(self.gravity[0], self.gravity[1], self.gravity[2])
             self.resolve_particles_obstacle()
+
+    @ti.kernel
+    def compute_frame_stats(self):
+        active = 0
+        sum_v2 = 0.0
+        vmax = 0.0
+        y_min = 1.0e9
+        y_max = -1.0e9
+
+        for p in self.F_x:
+            if self.F_used[p] == 0:
+                continue
+            active += 1
+            v = self.F_v[p]
+            v2 = v.dot(v)
+            sum_v2 += v2
+            sp = ti.sqrt(v2)
+            vmax = ti.max(vmax, sp)
+            y = self.F_x[p][1]
+            y_min = ti.min(y_min, y)
+            y_max = ti.max(y_max, y)
+
+        self.S_active[None] = active
+        if active > 0:
+            self.S_speed_rms[None] = ti.sqrt(sum_v2 / ti.cast(active, ti.f32))
+            self.S_speed_max[None] = vmax
+            self.S_y_min[None] = y_min
+            self.S_y_max[None] = y_max
+        else:
+            self.S_speed_rms[None] = 0.0
+            self.S_speed_max[None] = 0.0
+            self.S_y_min[None] = 0.0
+            self.S_y_max[None] = 0.0
 

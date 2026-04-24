@@ -1,0 +1,55 @@
+sim:
+  dim: 3
+  n_grid: 256
+  steps: 25
+  dt: 1.0e-4
+  n_particles: 1000
+  gravity: [0.0, -9.8, 0.0]
+  bound: 3
+
+material:
+  p_rho: 1.0
+  E: 1000.0
+  nu: 0.2
+
+sdf:
+  res: 256
+  cache_enabled: true
+
+offline:
+  simulation_duration_seconds: 2.0
+
+render:
+  resolution: [1280, 720]
+  vsync: true
+  particles_radius: 0.002
+  camera:
+    position: [0.5, 1.0, 1.95]
+    lookat: [0.5, 0.5, 0.5]
+    fov: 55
+  lights:
+    ambient: [0.18, 0.18, 0.18]
+    point_lights:
+      - pos: [0.5, 1.5, 0.5]
+        color: [0.75, 0.75, 0.75]
+      - pos: [0.5, 1.5, 1.5]
+        color: [0.75, 0.75, 0.75]
+      - pos: [0.5, 0.05, 0.5]
+        color: [0.35, 0.35, 0.35]
+
+particles:
+  presets:
+    - name: Snow
+      volumes:
+        - kind: cube
+          minimum: [0.05, 0.5, 0.05]
+          size: [0.9, 0.4, 0.9]
+          material: snow
+
+obstacles:
+  presets:
+    - name: Old Main
+      kind: mesh
+      path: assets/old_main_Meshy.obj
+      scale: 0.2
+      center: [0.5, 0.115, 0.5]

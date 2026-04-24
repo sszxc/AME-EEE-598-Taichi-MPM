@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import sys
 import numpy as np
+from tqdm import tqdm
 
 
 def build_sdf_box_volume(mn, mx, res: int) -> np.ndarray:
@@ -27,18 +29,27 @@ def build_sdf_mesh_volume(verts, faces, res: int) -> np.ndarray:
     except ImportError as e:  # pragma: no cover
         raise ImportError("Mesh obstacle SDF needs: pip install trimesh rtree scipy") from e
 
-    mesh = trimesh.Trimesh(
-        vertices=np.asarray(verts, dtype=np.float64),
-        faces=np.asarray(faces, dtype=np.int64),
-        process=True,
-    )
-    pitch = 1.0 / float(res)
-    voxels = mesh.voxelized(pitch=pitch)
-    ii = np.arange(res, dtype=np.float64)
-    i, j, k = np.meshgrid(ii, ii, ii, indexing="ij")
-    pts = np.stack([(i + 0.5) / res, (j + 0.5) / res, (k + 0.5) / res], axis=-1).reshape(-1, 3)
-    occ = voxels.is_filled(pts).reshape(res, res, res)
-    dist_out = ndi.distance_transform_edt(~occ) * pitch
-    dist_in = ndi.distance_transform_edt(occ) * pitch
+    with tqdm(total=4, desc=f"Build mesh SDF (res={res})", unit="step", disable=not sys.stderr.isatty()) as pbar:
+        mesh = trimesh.Trimesh(
+            vertices=np.asarray(verts, dtype=np.float64),
+            faces=np.asarray(faces, dtype=np.int64),
+            process=True,
+        )
+        pbar.update(1)
+
+        pitch = 1.0 / float(res)
+        voxels = mesh.voxelized(pitch=pitch)
+        pbar.update(1)
+
+        ii = np.arange(res, dtype=np.float64)
+        i, j, k = np.meshgrid(ii, ii, ii, indexing="ij")
+        pts = np.stack([(i + 0.5) / res, (j + 0.5) / res, (k + 0.5) / res], axis=-1).reshape(-1, 3)
+        occ = voxels.is_filled(pts).reshape(res, res, res)
+        pbar.update(1)
+
+        dist_out = ndi.distance_transform_edt(~occ) * pitch
+        dist_in = ndi.distance_transform_edt(occ) * pitch
+        pbar.update(1)
+
     return (dist_out - dist_in).astype(np.float32)
 

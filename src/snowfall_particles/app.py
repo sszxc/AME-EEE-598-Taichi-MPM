@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -156,6 +157,10 @@ class MpmApp:
         self.use_random_colors = False
         self.paused = False
         self.particles_radius = float(cfg.render.particles_radius)
+        self._frame_idx = 0
+        self._sim_time_s = 0.0
+        self._dt_frame = float(cfg.sim.steps) * float(cfg.sim.dt)
+        self._fps_ema = 0.0
 
         self.preset_names, self.presets = load_fluid_presets(cfg.particles)
         self.curr_preset_id = 0
@@ -313,12 +318,42 @@ class MpmApp:
     def run(self):
         if self.headless:
             raise RuntimeError("run() requires GUI mode (headless=False)")
+        frame_start = time.perf_counter()
         while self.window.running:
+            t0 = time.perf_counter()
             if not self.paused:
                 self.solver.step_frame()
+                self._frame_idx += 1
+                self._sim_time_s += self._dt_frame
             self.render()
             self.show_options()
             self.window.show()
+
+            # Single-line terminal log (updates current line, doesn't spam).
+            # Keep it lightweight: compute stats via a kernel, then read a few scalars.
+            self.solver.compute_frame_stats()
+            active = int(self.solver.S_active[None])
+            v_rms = float(self.solver.S_speed_rms[None])
+            v_max = float(self.solver.S_speed_max[None])
+            y_min = float(self.solver.S_y_min[None])
+            y_max = float(self.solver.S_y_max[None])
+
+            dt_wall = max(1e-9, time.perf_counter() - t0)
+            fps = 1.0 / dt_wall
+            self._fps_ema = fps if self._fps_ema <= 0 else (0.9 * self._fps_ema + 0.1 * fps)
+
+            state = "PAUSE" if self.paused else "RUN  "
+            msg = (
+                f"\r[{state}] frame={self._frame_idx:6d}  t={self._sim_time_s:7.3f}s"
+                f"  active={active:7d}"
+                f"  v_rms={v_rms:7.3e}  v_max={v_max:7.3e}"
+                f"  y=[{y_min:6.3f},{y_max:6.3f}]"
+                f"  {self._fps_ema:6.1f} FPS"
+            )
+            print(msg, end="", file=sys.stderr, flush=True)
+
+        # Ensure next shell prompt starts on new line.
+        print("", file=sys.stderr)
 
     def run_offline_export(
         self,

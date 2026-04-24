@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+from tqdm import tqdm
 
 from snowfall_particles.geometry.mesh_io import load_obj_triangles
 from snowfall_particles.geometry.transform import transform_mesh_for_preset
@@ -22,9 +24,23 @@ class MeshSdfRequest:
 
 def _sha256_file(path: Path) -> str:
     h = hashlib.sha256()
-    with path.open("rb") as f:
+    total = 0
+    try:
+        total = path.stat().st_size
+    except Exception:
+        total = 0
+    with path.open("rb") as f, tqdm(
+        total=total if total > 0 else None,
+        desc="Hash mesh (sha256)",
+        unit="B",
+        unit_scale=True,
+        unit_divisor=1024,
+        disable=not sys.stderr.isatty(),
+    ) as pbar:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
+            if total > 0:
+                pbar.update(len(chunk))
     return h.hexdigest()
 
 
@@ -66,9 +82,13 @@ def load_or_build_mesh_sdf(req: MeshSdfRequest, *, cache_enabled: bool = True) -
         if cached is not None and cached.shape == (req.sdf_res, req.sdf_res, req.sdf_res):
             return cached
 
-    verts, faces = load_obj_triangles(str(req.mesh_path))
-    verts = transform_mesh_for_preset(verts, req.scale, req.center)
-    phi = build_sdf_mesh_volume(verts, faces, req.sdf_res)
+    with tqdm(total=3, desc="Mesh SDF (cache miss)", unit="step", disable=not sys.stderr.isatty()) as pbar:
+        verts, faces = load_obj_triangles(str(req.mesh_path))
+        pbar.update(1)
+        verts = transform_mesh_for_preset(verts, req.scale, req.center)
+        pbar.update(1)
+        phi = build_sdf_mesh_volume(verts, faces, req.sdf_res)
+        pbar.update(1)
 
     if cache_enabled:
         save_cached_sdf(

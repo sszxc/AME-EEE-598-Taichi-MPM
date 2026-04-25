@@ -140,12 +140,21 @@ class MpmApp:
         self.cfg = cfg
         self.headless = bool(headless)
         mat = MaterialParams(p_rho=cfg.material.p_rho, E=cfg.material.E, nu=cfg.material.nu)
+        respawn_cfg = (cfg.particles.get("respawn", {}) or {})
+        self.respawn_enabled = bool(respawn_cfg.get("enabled", False))
+        self.respawn_particles_per_frame = max(
+            0,
+            int(round(float(cfg.sim.n_particles) * float(respawn_cfg.get("particles_per_frame_ratio", 0.0)))),
+        )
+        capacity_multiplier = max(1.0, float(respawn_cfg.get("capacity_multiplier", 1.0)))
+        max_particles = int(math.ceil(float(cfg.sim.n_particles) * capacity_multiplier))
         self.solver = MPMSolver(
             dim=cfg.sim.dim,
             n_grid=cfg.sim.n_grid,
             steps=cfg.sim.steps,
             dt=cfg.sim.dt,
             n_particles=cfg.sim.n_particles,
+            max_particles=max_particles,
             gravity=cfg.sim.gravity,
             bound=cfg.sim.bound,
             material=mat,
@@ -161,6 +170,7 @@ class MpmApp:
         self._sim_time_s = 0.0
         self._dt_frame = float(cfg.sim.steps) * float(cfg.sim.dt)
         self._fps_ema = 0.0
+        self._runtime_vols: list[dict[str, object]] = []
 
         self.preset_names, self.presets = load_fluid_presets(cfg.particles)
         self.curr_preset_id = 0
@@ -236,11 +246,8 @@ class MpmApp:
         phi = self._ensure_obstacle_sdf(obs, self.curr_obstacle_preset_id)
         self.solver.obs_phi.from_numpy(phi)
 
-    def init_sim(self):
-        self.solver.set_all_unused()
-
+    def _build_runtime_volumes(self) -> list[dict[str, object]]:
         vols = self.presets[self.curr_preset_id]
-        total_vol = sum(v.volume for v in vols) if vols else 1.0
         runtime_vols = []
 
         material_map = {"water": MPMSolver.WATER, "jelly": MPMSolver.JELLY, "snow": MPMSolver.SNOW}
@@ -253,7 +260,19 @@ class MpmApp:
                     "material_id": int(material_map[v.material]),
                 }
             )
+        return runtime_vols
+
+    def init_sim(self):
+        self.solver.set_all_unused()
+
+        self._runtime_vols = self._build_runtime_volumes()
+        runtime_vols = self._runtime_vols
         self.solver.init_vols(runtime_vols)
+
+    def step_sim_frame(self):
+        self.solver.step_frame()
+        if self.respawn_enabled and self.respawn_particles_per_frame > 0:
+            self.solver.spawn_vols(self._runtime_vols, self.respawn_particles_per_frame)
 
     def show_options(self):
         with self.gui.sub_window("Presets", 0.05, 0.1, 0.2, 0.15) as w:
@@ -322,7 +341,7 @@ class MpmApp:
         while self.window.running:
             t0 = time.perf_counter()
             if not self.paused:
-                self.solver.step_frame()
+                self.step_sim_frame()
                 self._frame_idx += 1
                 self._sim_time_s += self._dt_frame
             self.render()
@@ -371,12 +390,11 @@ class MpmApp:
         self.sync_obstacle_collision()
 
         dt_frame = float(self.cfg.sim.steps) * float(self.cfg.sim.dt)
-        n_particles = int(self.cfg.sim.n_particles)
+        n_particles = int(self.solver.n_particles)
         max_steps = max(1, int(math.ceil(duration_sim_s / dt_frame)))
         buf_len = max_steps + 1
         positions = np.empty((buf_len, n_particles, 3), dtype=np.float32)
 
-        used = self.solver.F_used.to_numpy().astype(np.int8, copy=False)
         positions[0] = self.solver.F_x.to_numpy().astype(np.float32, copy=False)
 
         row = 1
@@ -390,12 +408,13 @@ class MpmApp:
             # floating-point drift can leave accum < duration after max_steps steps
             # and cause an extra write past positions.shape[0]-1.
             for _ in range(max_steps):
-                self.solver.step_frame()
+                self.step_sim_frame()
                 positions[row] = self.solver.F_x.to_numpy().astype(np.float32, copy=False)
                 row += 1
                 pbar.update(1)
 
         positions_out = positions[:row].copy()
+        used = self.solver.F_used.to_numpy().astype(np.int8, copy=False)
         particle_name = self.preset_names[self.curr_preset_id]
         obstacle_name = self.obstacle_presets[self.curr_obstacle_preset_id].name
 

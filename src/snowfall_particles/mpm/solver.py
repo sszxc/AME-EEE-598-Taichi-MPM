@@ -27,6 +27,7 @@ class MPMSolver:
         steps: int,
         dt: float,
         n_particles: int,
+        max_particles: int | None = None,
         gravity: tuple[float, float, float],
         bound: int,
         material: MaterialParams,
@@ -35,7 +36,8 @@ class MPMSolver:
         self.n_grid = int(n_grid)
         self.steps = int(steps)
         self.dt = float(dt)
-        self.n_particles = int(n_particles)
+        self.initial_n_particles = int(n_particles)
+        self.n_particles = max(self.initial_n_particles, int(max_particles or n_particles))
         self.gravity = [float(gravity[0]), float(gravity[1]), float(gravity[2])]
         self.bound = int(bound)
 
@@ -72,6 +74,7 @@ class MPMSolver:
         self.F_grid_v = ti.Vector.field(dim, float, (n_grid,) * dim)
         self.F_grid_m = ti.field(float, (n_grid,) * dim)
         self.F_used = ti.field(int, n_particles)
+        self.F_next_particle = ti.field(dtype=ti.i32, shape=())
 
         self.neighbour = (3,) * dim
 
@@ -256,6 +259,7 @@ class MPMSolver:
             )
             self.F_Jp[i] = 1
             self.F_dg[i] = ti.Matrix([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+            self.F_C[i] = ti.Matrix([[0, 0, 0], [0, 0, 0], [0, 0, 0]])
             self.F_v[i] = ti.Vector([0.0, 0.0, 0.0])
             self.F_materials[i] = material
             self.F_colors_random[i] = ti.Vector([ti.random(), ti.random(), ti.random(), ti.random()])
@@ -276,16 +280,44 @@ class MPMSolver:
         total_vol = 0.0
         for v in vols:
             total_vol += float(v["volume"])
+        if total_vol <= 0.0:
+            self.F_next_particle[None] = 0
+            return
 
         next_p = 0
         for i, v in enumerate(vols):
-            par_count = int(float(v["volume"]) / total_vol * self.n_particles)
+            par_count = int(float(v["volume"]) / total_vol * self.initial_n_particles)
             if i == len(vols) - 1:
-                par_count = self.n_particles - next_p
+                par_count = self.initial_n_particles - next_p
             mn = v["minimum"]
             sz = v["size"]
             self.init_cube_vol(next_p, next_p + par_count, mn[0], mn[1], mn[2], sz[0], sz[1], sz[2], int(v["material_id"]))
             next_p += par_count
+        self.F_next_particle[None] = next_p
+
+    def spawn_vols(self, vols: list[dict[str, Any]], spawn_count: int):
+        spawn_count = max(0, min(int(spawn_count), self.n_particles - int(self.F_next_particle[None])))
+        if spawn_count == 0:
+            return
+
+        total_vol = 0.0
+        for v in vols:
+            total_vol += float(v["volume"])
+        if total_vol <= 0.0:
+            return
+
+        next_p = int(self.F_next_particle[None])
+        spawned = 0
+        for i, v in enumerate(vols):
+            par_count = int(float(v["volume"]) / total_vol * spawn_count)
+            if i == len(vols) - 1:
+                par_count = spawn_count - spawned
+            mn = v["minimum"]
+            sz = v["size"]
+            self.init_cube_vol(next_p, next_p + par_count, mn[0], mn[1], mn[2], sz[0], sz[1], sz[2], int(v["material_id"]))
+            next_p += par_count
+            spawned += par_count
+        self.F_next_particle[None] = next_p
 
     def step_frame(self):
         for _ in range(self.steps):

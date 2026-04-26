@@ -67,12 +67,22 @@ class OfflineConfig:
 
 
 @dataclass(frozen=True)
+class ParticleMotionConfig:
+    lateral_force_probability: float
+    lateral_force_angle_degrees: float
+    lateral_force_min: float
+    lateral_force_max: float
+    max_fall_speed: float
+
+
+@dataclass(frozen=True)
 class Config:
     arch: TaichiArch
     sim: SimConfig
     material: MaterialConfig
     sdf: SdfConfig
     render: RenderConfig
+    particle_motion: ParticleMotionConfig
     particles: dict[str, Any]
     obstacles: dict[str, Any]
     base_dir: Path
@@ -155,6 +165,24 @@ def load_config(path: str | Path) -> Config:
     )
 
     particles = data.get("particles", {}) or {}
+    motion = particles.get("motion", {}) or {}
+    motion_cfg = ParticleMotionConfig(
+        lateral_force_probability=float(motion.get("lateral_force_probability", 0.0)),
+        lateral_force_angle_degrees=float(motion.get("lateral_force_angle_degrees", 0.0)),
+        lateral_force_min=float(motion.get("lateral_force_min", 0.0)),
+        lateral_force_max=float(motion.get("lateral_force_max", 0.0)),
+        max_fall_speed=float(motion.get("max_fall_speed", 0.0)),
+    )
+    _require(
+        0.0 <= motion_cfg.lateral_force_probability <= 1.0,
+        "particles.motion.lateral_force_probability must be in [0, 1]",
+    )
+    _require(motion_cfg.lateral_force_min >= 0.0, "particles.motion.lateral_force_min must be >= 0")
+    _require(
+        motion_cfg.lateral_force_max >= motion_cfg.lateral_force_min,
+        "particles.motion.lateral_force_max must be >= lateral_force_min",
+    )
+    _require(motion_cfg.max_fall_speed >= 0.0, "particles.motion.max_fall_speed must be >= 0")
     obstacles = data.get("obstacles", {}) or {}
 
     offline_raw = data.get("offline")
@@ -170,6 +198,7 @@ def load_config(path: str | Path) -> Config:
         material=mat_cfg,
         sdf=sdf_cfg,
         render=render_cfg,
+        particle_motion=motion_cfg,
         particles=particles,
         obstacles=obstacles,
         base_dir=_PROJECT_ROOT,

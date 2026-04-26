@@ -4,7 +4,7 @@ sim:
   steps: 25
   dt: 1.0e-4
   n_particles: 100
-  gravity: [0.0, -3., 0.0]
+  gravity: [0.0, -9.8, 0.0]
   bound: 3
 
 material:
@@ -38,6 +38,12 @@ render:
         color: [0.35, 0.35, 0.35]
 
 particles:
+  motion:
+    lateral_force_probability: 0.1
+    lateral_force_angle_degrees: 90.0
+    lateral_force_min: 20
+    lateral_force_max: 50
+    max_fall_speed: 0.5
   respawn:
     enabled: true
     particles_per_frame_ratio: 0.01

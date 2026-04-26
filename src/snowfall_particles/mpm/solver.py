@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from math import exp
+from math import cos, radians, sin
 from typing import Any
 
 import numpy as np
@@ -11,6 +11,15 @@ class MaterialParams:
     p_rho: float
     E: float
     nu: float
+
+
+@dataclass(frozen=True)
+class ParticleMotionParams:
+    lateral_force_probability: float
+    lateral_force_angle_degrees: float
+    lateral_force_min: float
+    lateral_force_max: float
+    max_fall_speed: float
 
 
 @ti.data_oriented
@@ -31,6 +40,7 @@ class MPMSolver:
         gravity: tuple[float, float, float],
         bound: int,
         material: MaterialParams,
+        particle_motion: ParticleMotionParams | None = None,
     ):
         self.dim = int(dim)
         self.n_grid = int(n_grid)
@@ -40,6 +50,15 @@ class MPMSolver:
         self.n_particles = max(self.initial_n_particles, int(max_particles or n_particles))
         self.gravity = [float(gravity[0]), float(gravity[1]), float(gravity[2])]
         self.bound = int(bound)
+        if particle_motion is None:
+            particle_motion = ParticleMotionParams(0.0, 0.0, 0.0, 0.0, 0.0)
+        self.lateral_force_probability = float(particle_motion.lateral_force_probability)
+        self.lateral_force_min = float(particle_motion.lateral_force_min)
+        self.lateral_force_max = float(particle_motion.lateral_force_max)
+        self.max_fall_speed = float(particle_motion.max_fall_speed)
+        lateral_force_angle = radians(float(particle_motion.lateral_force_angle_degrees))
+        self.lateral_force_dir_x = cos(lateral_force_angle)
+        self.lateral_force_dir_z = sin(lateral_force_angle)
 
         self.dx = 1.0 / float(self.n_grid)
         self.p_rho = float(material.p_rho)
@@ -136,7 +155,18 @@ class MPMSolver:
         return ti.Vector([g0, g1, g2])
 
     @ti.kernel
-    def substep(self, g_x: ti.f32, g_y: ti.f32, g_z: ti.f32):
+    def substep(
+        self,
+        g_x: ti.f32,
+        g_y: ti.f32,
+        g_z: ti.f32,
+        lateral_force_probability: ti.f32,
+        lateral_force_dir_x: ti.f32,
+        lateral_force_dir_z: ti.f32,
+        lateral_force_min: ti.f32,
+        lateral_force_max: ti.f32,
+        max_fall_speed: ti.f32,
+    ):
         for I in ti.grouped(self.F_grid_m):
             self.F_grid_v[I] = ti.zero(self.F_grid_v[I])
             self.F_grid_m[I] = 0
@@ -212,6 +242,19 @@ class MPMSolver:
                 g_v = self.F_grid_v[base + offset]
                 new_v += weight * g_v
                 new_C += 4 * weight * g_v.outer_product(dpos) / self.dx**2
+            if lateral_force_probability > 0.0 and lateral_force_max > 0.0 and ti.random() < lateral_force_probability:
+                force_mag = lateral_force_min + ti.random() * (lateral_force_max - lateral_force_min)
+
+                _lateral_force_dir_x = lateral_force_dir_x
+                _lateral_force_dir_z = lateral_force_dir_z
+                if ti.random() < 1.0:  # whether to use truly random direction or the configured one
+                    lateral_force_angle = ti.random() * 2 * np.pi
+                    _lateral_force_dir_x = ti.cos(lateral_force_angle)
+                    _lateral_force_dir_z = ti.sin(lateral_force_angle)
+
+                new_v += self.dt * ti.Vector([_lateral_force_dir_x * force_mag, 0.0, _lateral_force_dir_z * force_mag])
+            if max_fall_speed > 0.0:
+                new_v[1] = ti.max(new_v[1], -max_fall_speed)
             self.F_v[p] = new_v
             self.F_x[p] += self.dt * self.F_v[p]
             self.F_C[p] = new_C
@@ -321,7 +364,17 @@ class MPMSolver:
 
     def step_frame(self):
         for _ in range(self.steps):
-            self.substep(self.gravity[0], self.gravity[1], self.gravity[2])
+            self.substep(
+                self.gravity[0],
+                self.gravity[1],
+                self.gravity[2],
+                self.lateral_force_probability,
+                self.lateral_force_dir_x,
+                self.lateral_force_dir_z,
+                self.lateral_force_min,
+                self.lateral_force_max,
+                self.max_fall_speed,
+            )
             self.resolve_particles_obstacle()
 
     @ti.kernel

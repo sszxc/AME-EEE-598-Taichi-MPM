@@ -11,7 +11,7 @@ import taichi as ti
 from tqdm import tqdm
 
 from snowfall_particles.config import Config
-from snowfall_particles.mpm.solver import MPMSolver, MaterialParams
+from snowfall_particles.mpm.solver import MPMSolver, MaterialParams, ParticleMotionParams
 from snowfall_particles.scene.presets import CubeVolume, load_fluid_presets, load_obstacle_presets
 from snowfall_particles.sdf.builders import build_sdf_box_volume
 from snowfall_particles.sdf.cache import MeshSdfRequest, load_or_build_mesh_sdf
@@ -140,6 +140,13 @@ class MpmApp:
         self.cfg = cfg
         self.headless = bool(headless)
         mat = MaterialParams(p_rho=cfg.material.p_rho, E=cfg.material.E, nu=cfg.material.nu)
+        motion = ParticleMotionParams(
+            lateral_force_probability=cfg.particle_motion.lateral_force_probability,
+            lateral_force_angle_degrees=cfg.particle_motion.lateral_force_angle_degrees,
+            lateral_force_min=cfg.particle_motion.lateral_force_min,
+            lateral_force_max=cfg.particle_motion.lateral_force_max,
+            max_fall_speed=cfg.particle_motion.max_fall_speed,
+        )
         respawn_cfg = (cfg.particles.get("respawn", {}) or {})
         self.respawn_enabled = bool(respawn_cfg.get("enabled", False))
         self.respawn_particles_per_frame = max(
@@ -158,6 +165,7 @@ class MpmApp:
             gravity=cfg.sim.gravity,
             bound=cfg.sim.bound,
             material=mat,
+            particle_motion=motion,
         )
         self.sdf_res = int(cfg.sdf.res)
         self.cache_enabled = bool(cfg.sdf.cache_enabled)

@@ -4,6 +4,7 @@ from typing import Tuple
 
 import numpy as np
 import taichi as ti
+from tqdm import tqdm
 
 import config as cfg
 import kernels as kernels
@@ -66,6 +67,210 @@ def _colors_for_frame(s: int) -> np.ndarray:
                 r, g, b = 0.4, 0.4, 0.4
         colors[i] = ti.rgb_to_hex((r, g, b))
     return colors
+
+
+def _unpack_hex_colors(hex_colors: np.ndarray) -> np.ndarray:
+    """Convert 0xRRGGBB colors to float RGB rows in [0, 1]."""
+    hex_ints = hex_colors.astype(np.int64, copy=False)
+    r = ((hex_ints >> 16) & 0xFF).astype(np.float32) / 255.0
+    g = ((hex_ints >> 8) & 0xFF).astype(np.float32) / 255.0
+    b = (hex_ints & 0xFF).astype(np.float32) / 255.0
+    return np.stack([r, g, b], axis=1)
+
+
+def _empty_mesh() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    vertices = np.zeros((1, 3), dtype=np.float32)
+    faces = np.zeros((0, 3), dtype=np.int32)
+    colors = np.full((1, 3), 0.5, dtype=np.float32)
+    return vertices, faces, colors
+
+
+def _write_binary_ply(
+    out_path: str,
+    *,
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    colors: np.ndarray | None = None,
+) -> None:
+    """
+    Write a little-endian binary PLY triangle mesh with optional per-vertex RGB.
+
+    Vertex layout:
+      float x, float y, float z, uchar red, uchar green, uchar blue
+    Face layout:
+      uchar vertex_count (always 3), int32 i0, int32 i1, int32 i2
+    """
+    verts = np.asarray(vertices, dtype=np.float32)
+    if verts.ndim != 2 or verts.shape[1] != 3:
+        raise ValueError(f"vertices must be shaped [V,3], got {verts.shape}.")
+    fac = np.asarray(faces, dtype=np.int32)
+    if fac.ndim != 2 or fac.shape[1] != 3:
+        raise ValueError(f"faces must be shaped [F,3], got {fac.shape}.")
+
+    if colors is None:
+        cols_u8 = np.full((verts.shape[0], 3), 127, dtype=np.uint8)
+    else:
+        cols = np.asarray(colors)
+        if cols.shape != verts.shape:
+            raise ValueError(f"colors must match vertices shape, got {cols.shape} vs {verts.shape}.")
+        if cols.dtype == np.uint8:
+            cols_u8 = cols
+        else:
+            cols_f = np.asarray(cols, dtype=np.float32)
+            cols_u8 = np.clip(np.rint(cols_f * 255.0), 0, 255).astype(np.uint8)
+
+    header = (
+        "ply\n"
+        "format binary_little_endian 1.0\n"
+        f"element vertex {int(verts.shape[0])}\n"
+        "property float x\n"
+        "property float y\n"
+        "property float z\n"
+        "property uchar red\n"
+        "property uchar green\n"
+        "property uchar blue\n"
+        f"element face {int(fac.shape[0])}\n"
+        "property list uchar int vertex_indices\n"
+        "end_header\n"
+    ).encode("ascii")
+
+    v_dtype = np.dtype(
+        [
+            ("x", "<f4"),
+            ("y", "<f4"),
+            ("z", "<f4"),
+            ("red", "u1"),
+            ("green", "u1"),
+            ("blue", "u1"),
+        ]
+    )
+    v = np.empty((verts.shape[0],), dtype=v_dtype)
+    v["x"], v["y"], v["z"] = verts[:, 0], verts[:, 1], verts[:, 2]
+    v["red"], v["green"], v["blue"] = cols_u8[:, 0], cols_u8[:, 1], cols_u8[:, 2]
+
+    f_dtype = np.dtype([("n", "u1"), ("i0", "<i4"), ("i1", "<i4"), ("i2", "<i4")])
+    f = np.empty((fac.shape[0],), dtype=f_dtype)
+    f["n"] = np.uint8(3)
+    f["i0"], f["i1"], f["i2"] = fac[:, 0], fac[:, 1], fac[:, 2]
+
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    with open(out_path, "wb") as fp:
+        fp.write(header)
+        fp.write(v.tobytes(order="C"))
+        fp.write(f.tobytes(order="C"))
+
+
+def _particles_to_mesh(
+    positions: np.ndarray,
+    colors: np.ndarray,
+    *,
+    res: int,
+    sigma: float,
+    level_ratio: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Build a surface mesh from particles by marching cubes over a smoothed density grid.
+
+    The simulation domain is [0, 1]^3. Colors are transferred from the nearest
+    particle to each generated mesh vertex.
+    """
+    try:
+        from scipy import ndimage as ndi  # type: ignore
+        from scipy.spatial import cKDTree  # type: ignore
+        from skimage import measure  # type: ignore
+    except ImportError as exc:  # pragma: no cover
+        raise ImportError(
+            "Mesh dumping needs scikit-image and scipy. Install with "
+            "`pip install scikit-image scipy`."
+        ) from exc
+
+    res = int(res)
+    if res < 4:
+        raise ValueError("mesh_res must be >= 4.")
+    if sigma < 0:
+        raise ValueError("mesh_sigma must be >= 0.")
+    if not (0.0 < level_ratio < 1.0):
+        raise ValueError("mesh_level_ratio must be in (0, 1).")
+
+    pos = np.asarray(positions, dtype=np.float32)
+    col = np.asarray(colors, dtype=np.float32)
+    if pos.ndim != 2 or pos.shape[1] != 3 or pos.shape[0] == 0:
+        return _empty_mesh()
+
+    pos = np.clip(pos, 0.0, 1.0)
+    idx = np.rint(pos * float(res - 1)).astype(np.int32)
+    idx = np.clip(idx, 0, res - 1)
+
+    density = np.zeros((res, res, res), dtype=np.float32)
+    np.add.at(density, (idx[:, 0], idx[:, 1], idx[:, 2]), 1.0)
+    if sigma > 0.0:
+        density = ndi.gaussian_filter(density, sigma=float(sigma), mode="constant")
+
+    max_density = float(density.max(initial=0.0))
+    if max_density <= 0.0:
+        return _empty_mesh()
+
+    spacing = np.array([1.0 / float(res - 1)] * 3, dtype=np.float32)
+    padded_density = np.pad(density, 1, mode="constant")
+    level = max_density * float(level_ratio)
+    try:
+        vertices, faces, _, _ = measure.marching_cubes(
+            padded_density,
+            level=level,
+            spacing=tuple(float(x) for x in spacing),
+        )
+    except ValueError:
+        return _empty_mesh()
+
+    vertices = vertices.astype(np.float32, copy=False) - spacing[None, :]
+    faces = faces.astype(np.int32, copy=False)
+
+    if col.shape[0] == pos.shape[0] and vertices.shape[0] > 0:
+        _, nearest = cKDTree(pos).query(vertices, k=1)
+        mesh_colors = col[np.asarray(nearest, dtype=np.int64)].astype(np.float32, copy=False)
+    else:
+        mesh_colors = np.full((vertices.shape[0], 3), 0.5, dtype=np.float32)
+
+    return vertices, faces, mesh_colors
+
+
+def dump_mesh_sequence(
+    iter_idx: int,
+    *,
+    start_s: int = 7,
+    step_s: int = 2,
+    out_dir: str = "outputs",
+    mesh_res: int = 64,
+    mesh_sigma: float = 1.25,
+    mesh_level_ratio: float = 0.08,
+) -> None:
+    """
+    Dump marching-cubes meshes to `{out_dir}/iter{iter_idx:04d}_mesh/####.ply` (binary).
+    """
+    print("Writing mesh data to disk...")
+
+    kernels.forward()
+    x_ = cfg.x.to_numpy()
+
+    folder = os.path.join(out_dir, f"iter{iter_idx:04d}_mesh/")
+    os.makedirs(folder, exist_ok=True)
+
+    for s in tqdm(
+        range(start_s, cfg.steps, step_s),
+        desc="Writing mesh data",
+        unit="frame",
+    ):
+        colors = _unpack_hex_colors(_colors_for_frame(s))
+        vertices, faces, mesh_colors = _particles_to_mesh(
+            x_[s],
+            colors,
+            res=int(mesh_res),
+            sigma=float(mesh_sigma),
+            level_ratio=float(mesh_level_ratio),
+        )
+        fn = os.path.join(folder, f"{s:04d}.ply")
+        _write_binary_ply(fn, vertices=vertices, faces=faces, colors=mesh_colors)
+    tqdm.write("Done.")
 
 
 def _project_isometric_xy(
@@ -188,7 +393,7 @@ def dump_particles_bin(
     out_dir: str = "outputs",
 ) -> None:
     """
-    Dump frames to `{out_dir}/iter{iter_idx:04d}/####.bin` with the same binary layout as before.
+    Dump frames to `{out_dir}/iter{iter_idx:04d}_particle/####.bin` with the same binary layout as before.
     """
     print("Writing particle data to disk...")
 
@@ -199,10 +404,14 @@ def dump_particles_bin(
     actuation_ = cfg.actuation.to_numpy()
     actuator_id_ = cfg.actuator_id.to_numpy()
 
-    folder = os.path.join(out_dir, f"iter{iter_idx:04d}/")
+    folder = os.path.join(out_dir, f"iter{iter_idx:04d}_particle/")
     os.makedirs(folder, exist_ok=True)
 
-    for s in range(start_s, cfg.steps, step_s):
+    for s in tqdm(
+        range(start_s, cfg.steps, step_s),
+        desc="Writing particle data",
+        unit="frame",
+    ):
         xs, ys, zs = [], [], []
         us, vs, ws = [], [], []
         cs = []
@@ -232,6 +441,5 @@ def dump_particles_bin(
         data = np.array(xs + ys + zs + us + vs + ws + cs, dtype=np.float32)
         fn = os.path.join(folder, f"{s:04d}.bin")
         data.tofile(open(fn, "wb"))
-        print(".", end="")
-    print()
+    tqdm.write("Done.")
 

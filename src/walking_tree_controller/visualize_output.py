@@ -12,9 +12,10 @@ Data format (produced by ``src/walking_tree_controller/diffmpm3d.py``):
   representable in float32).
 
 Usage (from repo root):
-    python src/walking_tree_controller/visualize_output.py mpm3d/iter0019
-    python src/walking_tree_controller/visualize_output.py mpm3d/iter0019 --fps 30 --loop
-    python src/walking_tree_controller/visualize_output.py mpm3d/iter0019 \
+    python src/walking_tree_controller/visualize_output.py outputs/iter0019_particle
+    python src/walking_tree_controller/visualize_output.py outputs/iter0019_particle --fps 30 --loop
+    python src/walking_tree_controller/visualize_output.py outputs/iter0019_mesh --mode mesh
+    python src/walking_tree_controller/visualize_output.py outputs/iter0019_particle \
         --save-frames out_frames --no-gui
 """
 
@@ -39,6 +40,13 @@ def _list_bin_frames(folder: Path) -> list[Path]:
     files = sorted(folder.glob("*.bin"))
     if not files:
         raise FileNotFoundError(f"No .bin frames found in {folder}")
+    return files
+
+
+def _list_mesh_frames(folder: Path) -> list[Path]:
+    files = sorted(folder.glob("*.ply"))
+    if not files:
+        raise FileNotFoundError(f"No .ply mesh frames found in {folder}")
     return files
 
 
@@ -107,6 +115,120 @@ def _preload_rollout(
     return all_pos, all_col, n_per_frame, n_max
 
 
+def _load_mesh_frame(frame_path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Load a binary little-endian PLY mesh frame.
+
+    Expected format (written by walking_tree_controller/viz.py):
+    - vertex: float x,y,z + uchar red,green,blue
+    - face: list uchar int vertex_indices (triangles)
+    """
+    with open(frame_path, "rb") as fp:
+        header_lines: list[str] = []
+        while True:
+            line = fp.readline()
+            if not line:
+                raise ValueError(f"Unexpected EOF while reading PLY header: {frame_path}")
+            try:
+                s = line.decode("ascii").rstrip("\n")
+            except Exception as exc:
+                raise ValueError(f"PLY header is not ASCII: {frame_path}") from exc
+            header_lines.append(s)
+            if s.strip() == "end_header":
+                break
+
+        if not header_lines or header_lines[0].strip() != "ply":
+            raise ValueError(f"Not a PLY file: {frame_path}")
+
+        fmt = None
+        n_vertices = None
+        n_faces = None
+        for s in header_lines:
+            if s.startswith("format "):
+                fmt = s.split()[1]
+            if s.startswith("element vertex "):
+                n_vertices = int(s.split()[-1])
+            if s.startswith("element face "):
+                n_faces = int(s.split()[-1])
+
+        if fmt != "binary_little_endian":
+            raise ValueError(f"Unsupported PLY format '{fmt}' in {frame_path}")
+        if n_vertices is None or n_faces is None:
+            raise ValueError(f"Missing vertex/face counts in {frame_path}")
+
+        v_dtype = np.dtype(
+            [
+                ("x", "<f4"),
+                ("y", "<f4"),
+                ("z", "<f4"),
+                ("red", "u1"),
+                ("green", "u1"),
+                ("blue", "u1"),
+            ]
+        )
+        v = np.fromfile(fp, dtype=v_dtype, count=int(n_vertices))
+        if v.shape[0] != int(n_vertices):
+            raise ValueError(f"Failed to read vertices from {frame_path}")
+
+        f_dtype = np.dtype([("n", "u1"), ("i0", "<i4"), ("i1", "<i4"), ("i2", "<i4")])
+        f = np.fromfile(fp, dtype=f_dtype, count=int(n_faces))
+        if f.shape[0] != int(n_faces):
+            raise ValueError(f"Failed to read faces from {frame_path}")
+        if np.any(f["n"] != 3):
+            raise ValueError(f"Non-triangle face encountered in {frame_path}")
+
+    vertices = np.stack([v["x"], v["y"], v["z"]], axis=1).astype(np.float32, copy=False)
+    faces = np.stack([f["i0"], f["i1"], f["i2"]], axis=1).astype(np.int32, copy=False)
+    colors = (
+        np.stack([v["red"], v["green"], v["blue"]], axis=1).astype(np.float32, copy=False)
+        / 255.0
+    )
+
+    if vertices.ndim != 2 or vertices.shape[1] != 3:
+        raise ValueError(f"{frame_path} has invalid vertices shape {vertices.shape}.")
+    if faces.ndim != 2 or faces.shape[1] != 3:
+        raise ValueError(f"{frame_path} has invalid faces shape {faces.shape}.")
+    if colors.shape != vertices.shape:
+        raise ValueError(
+            f"{frame_path} colors shape {colors.shape} does not match vertices {vertices.shape}."
+        )
+
+    if vertices.shape[0] == 0:
+        vertices = np.zeros((1, 3), dtype=np.float32)
+        colors = np.full((1, 3), 0.5, dtype=np.float32)
+
+    return vertices, faces, colors
+
+
+def _preload_mesh_rollout(
+    frames: list[Path],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, int, int]:
+    """
+    Preload variable-size mesh frames into padded arrays for Taichi GGUI.
+
+    Unused faces become zero-area triangles by padding indices with 0.
+    """
+    loaded = [_load_mesh_frame(fp) for fp in frames]
+    n_vertices = np.asarray([item[0].shape[0] for item in loaded], dtype=np.int32)
+    n_faces = np.asarray([item[1].shape[0] for item in loaded], dtype=np.int32)
+    v_max = int(n_vertices.max(initial=1))
+    index_max = max(3, int(n_faces.max(initial=0)) * 3)
+
+    all_vertices = np.zeros((len(frames), v_max, 3), dtype=np.float32)
+    all_colors = np.full((len(frames), v_max, 3), 0.5, dtype=np.float32)
+    all_indices = np.zeros((len(frames), index_max), dtype=np.int32)
+
+    for i, (vertices, faces, colors) in enumerate(loaded):
+        n_v = vertices.shape[0]
+        all_vertices[i, :n_v] = vertices
+        all_colors[i, :n_v] = colors
+
+        flat_indices = faces.reshape(-1)
+        all_indices[i, : flat_indices.shape[0]] = flat_indices
+
+    return all_vertices, all_colors, all_indices, n_vertices, n_faces, v_max, index_max
+
+
 def _make_ground_grid_segments(
     *,
     x_range: tuple[float, float] = (0.0, 1.0),
@@ -143,7 +265,13 @@ def main() -> None:
     ap.add_argument(
         "folder",
         type=Path,
-        help="Folder containing *.bin frames, e.g. mpm3d/iter0019",
+        help="Folder containing particle *.bin frames or mesh *.ply frames.",
+    )
+    ap.add_argument(
+        "--mode",
+        choices=("particles", "mesh"),
+        default="particles",
+        help="Render particle .bin frames or mesh .ply frames (default: particles).",
     )
     ap.add_argument("--fps", type=float, default=30.0, help="Playback FPS (default: 30).")
     ap.add_argument(
@@ -220,22 +348,54 @@ def main() -> None:
     if not folder.is_dir():
         raise SystemExit(f"Not a directory: {folder}")
 
-    frames = _list_bin_frames(folder)
-    all_pos, all_col, n_per_frame, n_particles = _preload_rollout(frames)
-    print(f"[visualize_output] folder    = {folder}")
-    print(f"[visualize_output] #frames   = {len(frames)}")
-    print(f"[visualize_output] #particles= {n_particles}")
-    if int(n_per_frame.min(initial=n_particles)) != int(n_per_frame.max(initial=n_particles)):
+    if args.mode == "particles":
+        frames = _list_bin_frames(folder)
+        all_pos, all_col, n_per_frame, n_particles = _preload_rollout(frames)
+        n_frames = len(frames)
+        print(f"[visualize_output] folder    = {folder}")
+        print(f"[visualize_output] mode      = particles")
+        print(f"[visualize_output] #frames   = {n_frames}")
+        print(f"[visualize_output] #particles= {n_particles}")
+        if int(n_per_frame.min(initial=n_particles)) != int(n_per_frame.max(initial=n_particles)):
+            print(
+                "[visualize_output] warning   = particle count varies across frames "
+                f"(min={int(n_per_frame.min())}, max={int(n_per_frame.max())}); "
+                "visualization will pad smaller frames."
+            )
+    else:
+        frames = _list_mesh_frames(folder)
+        (
+            all_vertices,
+            all_mesh_colors,
+            all_indices,
+            n_vertices_per_frame,
+            n_faces_per_frame,
+            n_vertices,
+            n_indices,
+        ) = _preload_mesh_rollout(frames)
+        n_frames = len(frames)
+        print(f"[visualize_output] folder    = {folder}")
+        print(f"[visualize_output] mode      = mesh")
+        print(f"[visualize_output] #frames   = {n_frames}")
         print(
-            "[visualize_output] warning   = particle count varies across frames "
-            f"(min={int(n_per_frame.min())}, max={int(n_per_frame.max())}); "
-            "visualization will pad smaller frames."
+            "[visualize_output] #vertices = "
+            f"{int(n_vertices_per_frame.min())}..{int(n_vertices_per_frame.max())} "
+            f"(padded to {n_vertices})"
+        )
+        print(
+            "[visualize_output] #faces    = "
+            f"{int(n_faces_per_frame.min())}..{int(n_faces_per_frame.max())}"
         )
 
     ti.init(arch=ti.gpu)
 
-    pos_field = ti.Vector.field(3, dtype=ti.f32, shape=n_particles)
-    col_field = ti.Vector.field(3, dtype=ti.f32, shape=n_particles)
+    if args.mode == "particles":
+        pos_field = ti.Vector.field(3, dtype=ti.f32, shape=n_particles)
+        col_field = ti.Vector.field(3, dtype=ti.f32, shape=n_particles)
+    else:
+        vertices_field = ti.Vector.field(3, dtype=ti.f32, shape=n_vertices)
+        mesh_color_field = ti.Vector.field(3, dtype=ti.f32, shape=n_vertices)
+        indices_field = ti.field(dtype=ti.i32, shape=n_indices)
 
     ground_field = None
     ground_color = tuple(float(c) for c in args.ground_color)
@@ -251,7 +411,7 @@ def main() -> None:
 
     w_px, h_px = int(args.window_size[0]), int(args.window_size[1])
     window = ti.ui.Window(
-        f"diffmpm3d rollout - {folder.name}",
+        f"diffmpm3d {args.mode} rollout - {folder.name}",
         (w_px, h_px),
         vsync=True,
         show_window=not args.no_gui,
@@ -280,14 +440,19 @@ def main() -> None:
             advance = max(1, int((now - last_advance) / dt_target))
             frame_idx += advance
             last_advance = now
-            if frame_idx >= len(frames):
+            if frame_idx >= n_frames:
                 if args.loop:
-                    frame_idx %= len(frames)
+                    frame_idx %= n_frames
                 else:
-                    frame_idx = len(frames) - 1
+                    frame_idx = n_frames - 1
 
-        pos_field.from_numpy(all_pos[frame_idx])
-        col_field.from_numpy(all_col[frame_idx])
+        if args.mode == "particles":
+            pos_field.from_numpy(all_pos[frame_idx])
+            col_field.from_numpy(all_col[frame_idx])
+        else:
+            vertices_field.from_numpy(all_vertices[frame_idx])
+            mesh_color_field.from_numpy(all_mesh_colors[frame_idx])
+            indices_field.from_numpy(all_indices[frame_idx])
 
         # Mouse + WASD camera navigation (RMB drag orbits around the initial look-at).
         camera.track_user_inputs_fixed_lookat(window, movement_speed=0.03, hold_key=ti.ui.RMB)
@@ -295,11 +460,19 @@ def main() -> None:
         scene.ambient_light((0.7, 0.7, 0.7))
         scene.point_light(pos=(2.0, 2.5, 2.0), color=(1.0, 1.0, 1.0))
 
-        scene.particles(
-            pos_field,
-            radius=float(args.radius),
-            per_vertex_color=col_field,
-        )
+        if args.mode == "particles":
+            scene.particles(
+                pos_field,
+                radius=float(args.radius),
+                per_vertex_color=col_field,
+            )
+        else:
+            scene.mesh(
+                vertices_field,
+                indices=indices_field,
+                per_vertex_color=mesh_color_field,
+                two_sided=True,
+            )
         if ground_field is not None:
             scene.lines(
                 ground_field,
@@ -317,7 +490,7 @@ def main() -> None:
         # When not looping, stop the main loop as soon as the last frame has been
         # written to disk in headless/save mode; otherwise keep the window open
         # so the user can orbit the final frame.
-        if (not args.loop) and frame_idx >= len(frames) - 1:
+        if (not args.loop) and frame_idx >= n_frames - 1:
             if args.save_frames is not None and args.no_gui:
                 break
 

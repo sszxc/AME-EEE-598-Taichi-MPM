@@ -180,7 +180,7 @@ def compute_actuation(t: ti.i32):
         act = 0.0
         for j in ti.static(range(cfg.n_sin_waves)):
             act += cfg.weights[i, j] * ti.sin(cfg.actuation_omega * t * cfg.dt + 2 * math.pi / cfg.n_sin_waves * j)
-        act += cfg.bias[i]
+        # act += cfg.bias[i]
         cfg.actuation[t, i] = ti.tanh(act)
 
 
@@ -238,8 +238,8 @@ def learn(learning_rate: ti.template()):
     for i, j in ti.ndrange(cfg.n_actuators, cfg.n_sin_waves):
         cfg.weights[i, j] -= learning_rate * cfg.weights.grad[i, j]
 
-    for i in range(cfg.n_actuators):
-        cfg.bias[i] -= learning_rate * cfg.bias.grad[i]
+    # for i in range(cfg.n_actuators):
+    #     cfg.bias[i] -= learning_rate * cfg.bias.grad[i]
 
 
 @ti.kernel

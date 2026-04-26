@@ -27,8 +27,8 @@ E = 10
 # TODO: update
 mu = E
 la = E
-max_steps = 512
-steps = 512
+max_steps = 1024
+steps = 1024
 gravity = 10
 target = [0.8, 0.2, 0.2]
 use_apic = False

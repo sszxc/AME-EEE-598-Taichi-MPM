@@ -111,6 +111,30 @@ def main():
         action='store_true',
         help='Disable interactive GUI playback (use with --vis_save).',
     )
+    parser.add_argument(
+        '--dump_mesh',
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help='Also dump marching-cubes mesh frames under iterXXXX_mesh/ (default: disabled).',
+    )
+    parser.add_argument(
+        '--mesh_res',
+        type=int,
+        default=64,
+        help='Voxel grid resolution for marching-cubes mesh dumping (default: 64).',
+    )
+    parser.add_argument(
+        '--mesh_sigma',
+        type=float,
+        default=1.25,
+        help='Gaussian smoothing sigma in voxels for particle density meshing (default: 1.25).',
+    )
+    parser.add_argument(
+        '--mesh_level_ratio',
+        type=float,
+        default=0.08,
+        help='Iso level as a fraction of max density for marching cubes (default: 0.08).',
+    )
     options = parser.parse_args()
     out_interval = int(options.out_interval)
     seed = int(options.seed)
@@ -226,6 +250,16 @@ def main():
                     _encode_mp4_from_png_folder(td, mp4_path, fps=30)
 
             viz.dump_particles_bin(iter_idx=iter, start_s=7, step_s=2, out_dir=options.out_dir)
+            if options.dump_mesh:
+                viz.dump_mesh_sequence(
+                    iter_idx=iter,
+                    start_s=7,
+                    step_s=2,
+                    out_dir=options.out_dir,
+                    mesh_res=int(options.mesh_res),
+                    mesh_sigma=float(options.mesh_sigma),
+                    mesh_level_ratio=float(options.mesh_level_ratio),
+                )
 
     if plt is not None and options.iters > 0:
         plt.title("Optimization of Initial Velocity")

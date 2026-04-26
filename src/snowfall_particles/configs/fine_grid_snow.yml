@@ -22,7 +22,7 @@ offline:
 render:
   resolution: [1280, 720]
   vsync: true
-  particles_radius: 0.002
+  particles_radius: 0.0015
   camera:
     position: [0.5, 0.7, 1.95]
     lookat: [0.5, 0.5, 0.5]
@@ -60,6 +60,6 @@ obstacles:
   presets:
     - name: Old Main
       kind: mesh
-      path: assets/old_main_from_scene_2.obj
+      path: assets/temp_old_main.obj
       scale: 0.02
       center: [0.5, 0.08, 0.5]

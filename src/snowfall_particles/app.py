@@ -15,7 +15,7 @@ from snowfall_particles.mpm.solver import MPMSolver, MaterialParams, ParticleMot
 from snowfall_particles.scene.presets import CubeVolume, load_fluid_presets, load_obstacle_presets
 from snowfall_particles.sdf.builders import build_sdf_box_volume
 from snowfall_particles.sdf.cache import MeshSdfRequest, load_or_build_mesh_sdf
-from snowfall_particles.ui.camera import FixedLookatCamera
+from utils.camera import FixedLookatCamera
 
 
 def build_unit_cube_tank_fields():
@@ -312,7 +312,7 @@ class MpmApp:
                 self.material_colors[MPMSolver.SNOW] = w.color_edit_3("snow color", self.material_colors[MPMSolver.SNOW])
                 self.material_colors[MPMSolver.JELLY] = w.color_edit_3("jelly color", self.material_colors[MPMSolver.JELLY])
                 self.solver.set_color_by_material(np.array(self.material_colors, dtype=np.float32))
-            self.particles_radius = w.slider_float("particles radius ", self.particles_radius, 0, 0.1)
+            self.particles_radius = w.slider_float("particles radius ", self.particles_radius, 0, 0.01)
             if w.button("restart"):
                 self.init_sim()
             if self.paused:

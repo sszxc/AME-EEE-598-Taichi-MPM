@@ -147,7 +147,7 @@ def main():
         _py_random.seed(seed)
     except Exception:
         pass
-    # 2) NumPy global seed (TreeRoot uses default_rng(seed), but keep this too)
+    # 2) NumPy global seed (TreePlant uses default_rng(seed), but keep this too)
     try:
         np.random.seed(seed)
     except Exception:
@@ -163,7 +163,8 @@ def main():
 
     # initialization
     scene = scene_lib.Scene()
-    scene_lib.build_walking_tree_root(scene)
+    scene_lib.build_walking_tree_plant(scene)
+    # scene_lib.build_walking_tree_root(scene)
     os.makedirs(os.path.abspath(options.out_dir), exist_ok=True)
     init_ply_path = os.path.join(options.out_dir, "walking_tree_init.ply")
     viz.export_init_ply(scene, init_ply_path)

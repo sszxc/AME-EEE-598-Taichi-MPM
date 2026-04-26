@@ -159,7 +159,7 @@ def _eval_bezier(p0, p1, p2, p3, t):
     )
 
 
-class TreeRoot:
+class TreePlant:
     def __init__(self):
         self.trunk_base = np.array([0.0, 0.3, 0.0], dtype=np.float32)
         self.world_offset = np.array([0.5, 0.0, 0.5], dtype=np.float32)
@@ -175,6 +175,14 @@ class TreeRoot:
         self.disk_density = 2.0
         self.particle_jitter = 0.0012
         self.seed = 0
+        self.trunk_height = 0.5
+        self.trunk_base_radius = 0.09
+        self.trunk_tip_radius = 0.04
+        self.branch_depth = 1  # 2
+        self.branch_length_decay = 0.58
+        self.branch_radius_decay = 0.48
+        self.branches_per_level = 3
+        self._rng = None
 
     def _local_frame(self, tangent):
         tangent = _safe_normalize(tangent)
@@ -209,14 +217,61 @@ class TreeRoot:
         curve[:, 1] = np.maximum(curve[:, 1], self.ground_y + 0.003)
         return curve.astype(np.float32, copy=False)
 
-    def populate_scene(self, scene):
-        rng = np.random.default_rng(self.seed)
-        scene.set_offset(
-            float(self.world_offset[0]),
-            float(self.world_offset[1]),
-            float(self.world_offset[2]),
-        )
+    def _sample_tapered_segment(
+        self,
+        scene,
+        p0,
+        p1,
+        r0,
+        r1,
+        actuation,
+        root_id=-1,
+        segment_id=-1,
+        min_y=None,
+    ):
+        seg_vec = p1 - p0
+        seg_len = float(np.linalg.norm(seg_vec))
+        if seg_len < 1e-7:
+            return
 
+        rng = self._rng
+        _, up_axis, side_axis = self._local_frame(seg_vec)
+        n_along = max(2, int(math.ceil(seg_len / max(1e-6, cfg.dx * 0.8))))
+        for k in range(n_along):
+            alpha = (k + 0.5) / n_along
+            center = (1.0 - alpha) * p0 + alpha * p1
+            radius = (1.0 - alpha) * r0 + alpha * r1
+            area = math.pi * radius * radius
+            n_cross = max(8, int(area / max(1e-8, cfg.dx * cfg.dx) * self.disk_density))
+
+            for _ in range(n_cross):
+                rr = radius * math.sqrt(float(rng.random()))
+                theta = 2.0 * math.pi * float(rng.random())
+                u = rr * math.cos(theta)
+                v = rr * math.sin(theta)
+                local_offset = up_axis * u + side_axis * v
+                jitter = (rng.random(3, dtype=np.float32) * 2.0 - 1.0) * self.particle_jitter
+                pos = center + local_offset + jitter
+                if min_y is not None:
+                    pos[1] = max(float(pos[1]), min_y)
+
+                act = actuation
+                if callable(actuation):
+                    act = actuation(u, v)
+                scene._append_particle(
+                    [
+                        float(pos[0]) + scene.offset_x,
+                        float(pos[1]) + scene.offset_y,
+                        float(pos[2]) + scene.offset_z,
+                    ],
+                    act,
+                    1,
+                    root_id=root_id,
+                    segment_id=segment_id,
+                )
+
+    def _build_roots(self, scene):
+        rng = self._rng
         for root_idx in range(self.num_roots):
             curve = self._build_root_curve(root_idx, rng)
             for seg_idx in range(self.segments_per_root):
@@ -227,7 +282,7 @@ class TreeRoot:
                 if seg_len < 1e-7:
                     continue
 
-                tangent, up_axis, side_axis = self._local_frame(seg_vec)
+                _, up_axis, side_axis = self._local_frame(seg_vec)
                 actuator_up = scene.new_actuator()
                 actuator_down = scene.new_actuator()
                 actuator_right = scene.new_actuator()
@@ -242,51 +297,138 @@ class TreeRoot:
                 r0 = (1.0 - t0) * self.start_radius + t0 * self.end_radius
                 r1 = (1.0 - t1) * self.start_radius + t1 * self.end_radius
 
-                n_along = max(2, int(math.ceil(seg_len / max(1e-6, cfg.dx * 0.8))))
-                for k in range(n_along):
-                    alpha = (k + 0.5) / n_along
-                    center = (1.0 - alpha) * p0 + alpha * p1
-                    radius = (1.0 - alpha) * r0 + alpha * r1
-                    area = math.pi * radius * radius
-                    n_cross = max(8, int(area / max(1e-8, cfg.dx * cfg.dx) * self.disk_density))
+                def root_actuation(u, v):
+                    # Assign each particle to the dominant directional lobe
+                    # of the root cross-section.
+                    if abs(u) >= abs(v):
+                        return actuator_up if u >= 0.0 else actuator_down
+                    return actuator_right if v >= 0.0 else actuator_left
 
-                    for _ in range(n_cross):
-                        rr = radius * math.sqrt(float(rng.random()))
-                        theta = 2.0 * math.pi * float(rng.random())
-                        u = rr * math.cos(theta)
-                        v = rr * math.sin(theta)
-                        local_offset = up_axis * u + side_axis * v
-                        jitter = (rng.random(3, dtype=np.float32) * 2.0 - 1.0) * self.particle_jitter
-                        pos = center + local_offset + jitter
-                        pos[1] = max(float(pos[1]), self.ground_y)
-                        # Assign each particle to the dominant directional lobe
-                        # of the root cross-section.
-                        if abs(u) >= abs(v):
-                            act = actuator_up if u >= 0.0 else actuator_down
-                        else:
-                            act = actuator_right if v >= 0.0 else actuator_left
-                        scene._append_particle(
-                            [
-                                float(pos[0]) + scene.offset_x,
-                                float(pos[1]) + scene.offset_y,
-                                float(pos[2]) + scene.offset_z,
-                            ],
-                            act,
-                            1,
-                            root_id=root_idx,
-                            segment_id=seg_idx,
-                        )
+                self._sample_tapered_segment(
+                    scene,
+                    p0,
+                    p1,
+                    r0,
+                    r1,
+                    root_actuation,
+                    root_id=root_idx,
+                    segment_id=seg_idx,
+                    min_y=self.ground_y,
+                )
+
+    def _build_trunk(self, scene):
+        p0 = self.trunk_base
+        p1 = self.trunk_base + np.array([0.0, self.trunk_height, 0.0], dtype=np.float32)
+        self._sample_tapered_segment(
+            scene,
+            p0,
+            p1,
+            self.trunk_base_radius,
+            self.trunk_tip_radius,
+            -1,
+        )
+
+    def _branch_direction(self, level, branch_idx, rng):
+        angle = 2.0 * math.pi * (branch_idx / max(1, self.branches_per_level))
+        angle += level * 0.73 + rng.uniform(-0.28, 0.28)
+        horizontal = np.array([math.cos(angle), 0.0, math.sin(angle)], dtype=np.float32)
+        upward = 0.55 - 0.08 * level + rng.uniform(-0.08, 0.08)
+        return _safe_normalize(horizontal + np.array([0.0, upward, 0.0], dtype=np.float32))
+
+    def _build_branch_level(self, scene, start, parent_dir, level, length, radius):
+        if level >= self.branch_depth or length <= 1e-5 or radius <= 1e-5:
+            return
+
+        rng = self._rng
+        for branch_idx in range(self.branches_per_level):
+            blend = self._branch_direction(level, branch_idx, rng)
+            direction = _safe_normalize(parent_dir * 0.35 + blend * 0.65)
+            end = start + direction * length
+            end[1] = max(float(end[1]), self.ground_y + 0.02)
+            tip_radius = radius * self.branch_radius_decay
+            self._sample_tapered_segment(scene, start, end, radius, tip_radius, -1)
+            self._build_branch_level(
+                scene,
+                end,
+                direction,
+                level + 1,
+                length * self.branch_length_decay,
+                tip_radius,
+            )
+
+    def _build_branches(self, scene):
+        if self.branch_depth <= 0:
+            return
+
+        rng = self._rng
+        trunk_top = self.trunk_base + np.array([0.0, self.trunk_height, 0.0], dtype=np.float32)
+        start_height = self.trunk_height * 0.55
+        base_length = self.trunk_height * 0.42
+        base_radius = self.trunk_tip_radius * 0.72
+        for i in range(self.branches_per_level):
+            height_alpha = 0.0 if self.branches_per_level == 1 else i / (self.branches_per_level - 1)
+            start = self.trunk_base + np.array(
+                [0.0, start_height + height_alpha * (self.trunk_height * 0.32), 0.0],
+                dtype=np.float32,
+            )
+            direction = self._branch_direction(0, i, rng)
+            end = start + direction * base_length
+            end[1] = min(float(end[1]), float(trunk_top[1] + base_length * 0.35))
+            self._sample_tapered_segment(
+                scene,
+                start,
+                end,
+                base_radius,
+                base_radius * self.branch_radius_decay,
+                -1,
+            )
+            self._build_branch_level(
+                scene,
+                end,
+                direction,
+                1,
+                base_length * self.branch_length_decay,
+                base_radius * self.branch_radius_decay,
+            )
+
+    def _begin_population(self, scene):
+        self._rng = np.random.default_rng(self.seed)
+        scene.set_offset(
+            float(self.world_offset[0]),
+            float(self.world_offset[1]),
+            float(self.world_offset[2]),
+        )
+
+    def populate_roots(self, scene):
+        self._begin_population(scene)
+        self._build_roots(scene)
+
+    def populate_scene(self, scene):
+        self._begin_population(scene)
+        self._build_roots(scene)
+        self._build_trunk(scene)
+        self._build_branches(scene)
 
 
-def build_walking_tree_root(scene: Scene):
-    root_system = TreeRoot()
+def _apply_procedural_seed(plant):
     # Allow external control for deterministic procedural generation.
     # (Also see diffmpm3d.py which seeds Python/NumPy/Taichi.)
     if hasattr(cfg, "seed") and cfg.seed is not None:
         try:
-            root_system.seed = int(cfg.seed)
+            plant.seed = int(cfg.seed)
         except Exception:
             pass
-    root_system.populate_scene(scene)
+    return plant
+
+
+def build_walking_tree_root(scene: Scene):
+    root_system = _apply_procedural_seed(TreePlant())
+    root_system.populate_roots(scene)
     return root_system
+
+
+def build_walking_tree_plant(scene: Scene):
+    plant = _apply_procedural_seed(TreePlant())
+    plant.populate_scene(scene)
+    return plant
 

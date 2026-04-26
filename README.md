@@ -10,7 +10,7 @@ pip install -r requirements.txt
 
 ## Snowfall particles
 
-![Snowfall particles](media/Screenshot_snowfall.png)
+![Snowfall particles](media/Screenshot_snowfall_respawn.png)
 
 ```bash
 python src/snowfall_particles/snowfall_simulate.py --config configs/default.yml
@@ -24,10 +24,16 @@ python src/snowfall_particles/visualize_output.py outputs/snow.npz
 
 ### TODO 
 
-- [ ] Add random wind force
-- [ ] Add max velocity limit
+- [x] Add random wind force
+- [x] Add max velocity limit
 
 
 ## Walking tree controller
+
+```bash
+python src/walking_tree_controller/diffmpm3d.py --iters 0 --export_init_ply outputs/walking_tree_init.ply
+python src/walking_tree_controller/diffmpm3d.py
+python src/walking_tree_controller/visualize_output.py outputs/mpm3d/iter0019
+```
 
 ## Skeleton to tree-shaped mesh

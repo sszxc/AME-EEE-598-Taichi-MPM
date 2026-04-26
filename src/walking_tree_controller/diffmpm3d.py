@@ -1,4 +1,8 @@
 import argparse
+import os
+import shutil
+import subprocess
+import tempfile
 import time
 from typing import Optional
 
@@ -21,11 +25,71 @@ except Exception:  # pragma: no cover
     tqdm = None  # type: ignore
 
 
+def _require_ffmpeg() -> str:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError(
+            "ffmpeg not found. Install ffmpeg and ensure `ffmpeg` is on your PATH.\n"
+            "- macOS (brew): brew install ffmpeg\n"
+            "- conda: conda install -c conda-forge ffmpeg"
+        )
+    return ffmpeg
+
+
+def _encode_mp4_from_png_folder(png_folder: str, out_mp4: str, *, fps: int = 30) -> None:
+    ffmpeg = _require_ffmpeg()
+    os.makedirs(os.path.dirname(os.path.abspath(out_mp4)), exist_ok=True)
+
+    # Use glob pattern so filenames don't need to be contiguous (e.g. 0000.png, 0008.png, ...)
+    pattern = os.path.join(os.path.abspath(png_folder), "*.png")
+    cmd = [
+        ffmpeg,
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostats",
+        "-framerate",
+        str(int(fps)),
+        "-pattern_type",
+        "glob",
+        "-i",
+        pattern,
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        # Ensure even dimensions for H.264 compatibility
+        "-vf",
+        "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+        out_mp4,
+    ]
+    subprocess.run(cmd, check=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--iters', type=int, default=100)
-    parser.add_argument('--vis_interval', type=int, default=10)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Random seed for Python/NumPy/Taichi and procedural scene generation (default: 0).",
+    )
+    parser.add_argument(
+        '--out_interval',
+        type=int,
+        default=20,
+        help='Unified interval (in outer iters) for BOTH visualization and .bin dumping. '
+        'Set <=0 to disable both. Default: 20.',
+    )
     parser.add_argument('--vis_stride', type=int, default=8)
+    parser.add_argument(
+        '--out_dir',
+        type=str,
+        default='outputs',
+        help="Output directory root (default: 'outputs').",
+    )
     parser.add_argument(
         '--progress',
         action='store_true',
@@ -38,8 +102,9 @@ def main():
     )
     parser.add_argument(
         '--vis_save',
-        action='store_true',
-        help='Also save rollout frames as pngs under mpm3d_vis/.',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Save rollout as mp4 under mpm3d_vis/ (default: enabled).',
     )
     parser.add_argument(
         '--vis_no_gui',
@@ -47,10 +112,37 @@ def main():
         help='Disable interactive GUI playback (use with --vis_save).',
     )
     options = parser.parse_args()
+    out_interval = int(options.out_interval)
+    seed = int(options.seed)
+
+    # ---- Seed all RNG sources for determinism ----
+    # 1) Python's random (used in Scene.add_rect for non-solid particles)
+    try:
+        import random as _py_random
+
+        _py_random.seed(seed)
+    except Exception:
+        pass
+    # 2) NumPy global seed (TreeRoot uses default_rng(seed), but keep this too)
+    try:
+        np.random.seed(seed)
+    except Exception:
+        pass
+    # 3) Taichi random (used by ti.randn in kernels.init)
+    if hasattr(ti, "seed"):
+        try:
+            ti.seed(seed)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    # 4) Propagate to procedural root generator.
+    cfg.seed = seed
 
     # initialization
     scene = scene_lib.Scene()
-    scene_lib.robot(scene)
+    scene_lib.build_walking_tree_root(scene)
+    os.makedirs(os.path.abspath(options.out_dir), exist_ok=True)
+    init_ply_path = os.path.join(options.out_dir, "walking_tree_init.ply")
+    viz.export_init_ply(scene, init_ply_path)
     # scene.add_rect(0.4, 0.4, 0.2, 0.1, 0.3, 0.1, -1, 1)
     scene.finalize()
     cfg.allocate_fields()
@@ -59,6 +151,9 @@ def main():
         np.array(scene.x, dtype=np.float32),
         np.array(scene.actuator_id, dtype=np.int32),
         np.array(scene.particle_type, dtype=np.int32),
+        np.array(scene.root_id, dtype=np.int32),
+        np.array(scene.segment_id, dtype=np.int32),
+        np.array(scene.actuator_dir, dtype=np.float32),
     )
 
     losses = []
@@ -96,32 +191,51 @@ def main():
         learning_rate = 30
         kernels.learn(learning_rate)
 
-        if options.vis_interval > 0 and iter % options.vis_interval == 0:
-            out_dir = f"outputs/mpm3d_vis/iter{iter:04d}" if options.vis_save else None
+        # Trigger visualization + bin dump together on a unified cadence.
+        # We use (iter + 1) % interval == 0 to match the historical bin-dump timing
+        # (previously: iter % 20 == 19).
+        if out_interval > 0 and (iter + 1) % out_interval == 0:
+            mp4_path = (
+                os.path.join(options.out_dir, f"iter{iter:04d}.mp4")
+                if options.vis_save
+                else None
+            )
             print(
                 "Visualizing rollout "
                 + ("(GUI)" if not options.vis_no_gui else "(no GUI)")
-                + (f" + saving to '{out_dir}'" if out_dir is not None else "")
+                + (f" + saving to '{mp4_path}'" if mp4_path is not None else "")
                 + " ..."
             )
-            viz.visualize_rollout(
-                iter_idx=iter,
-                stride=max(1, int(options.vis_stride)),
-                save_folder=out_dir,
-                interactive=(not options.vis_no_gui),
-            )
+            if mp4_path is None:
+                viz.visualize_rollout(
+                    iter_idx=iter,
+                    stride=max(1, int(options.vis_stride)),
+                    save_folder=None,
+                    interactive=(not options.vis_no_gui),
+                )
+            else:
+                with tempfile.TemporaryDirectory(
+                    prefix=f"mpm3d_vis_iter{iter:04d}_"
+                ) as td:
+                    viz.visualize_rollout(
+                        iter_idx=iter,
+                        stride=max(1, int(options.vis_stride)),
+                        save_folder=td,
+                        interactive=(not options.vis_no_gui),
+                    )
+                    _encode_mp4_from_png_folder(td, mp4_path, fps=30)
 
-        if iter % 20 == 19:
-            viz.dump_particles_bin(iter_idx=iter, start_s=7, step_s=2)
+            viz.dump_particles_bin(iter_idx=iter, start_s=7, step_s=2, out_dir=options.out_dir)
 
-    if plt is not None:
+    if plt is not None and options.iters > 0:
         plt.title("Optimization of Initial Velocity")
         plt.ylabel("Loss")
         plt.xlabel("Gradient Descent Iterations")
         plt.plot(losses)
-        plt.show()
-    else:
-        print("matplotlib 未安装，跳过 loss 曲线绘制。")
+        loss_plot_path = os.path.join(options.out_dir, "loss.png")
+        os.makedirs(os.path.dirname(loss_plot_path), exist_ok=True)
+        plt.savefig(loss_plot_path, dpi=200, bbox_inches="tight")
+        # plt.show()
 
 
 if __name__ == '__main__':

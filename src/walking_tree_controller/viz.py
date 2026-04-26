@@ -1,4 +1,5 @@
 import os
+import colorsys
 from typing import Tuple
 
 import numpy as np
@@ -6,6 +7,43 @@ import taichi as ti
 
 import config as cfg
 import kernels as kernels
+
+
+def _color_for_actuator(act_id: int) -> tuple[int, int, int]:
+    if act_id < 0:
+        return (120, 120, 120)
+    hue = (act_id * 0.61803398875) % 1.0
+    r, g, b = colorsys.hsv_to_rgb(hue, 0.72, 0.95)
+    return (int(r * 255), int(g * 255), int(b * 255))
+
+
+def export_init_ply(scene, out_path: str) -> None:
+    points = np.asarray(scene.x, dtype=np.float32)
+    actuator_ids = np.asarray(scene.actuator_id, dtype=np.int32)
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError("scene.x must be shaped [N, 3].")
+    if points.shape[0] != actuator_ids.shape[0]:
+        raise ValueError("scene.x and scene.actuator_id length mismatch.")
+
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("ply\n")
+        f.write("format ascii 1.0\n")
+        f.write(f"element vertex {points.shape[0]}\n")
+        f.write("property float x\n")
+        f.write("property float y\n")
+        f.write("property float z\n")
+        f.write("property uchar red\n")
+        f.write("property uchar green\n")
+        f.write("property uchar blue\n")
+        f.write("end_header\n")
+        for i in range(points.shape[0]):
+            r, g, b = _color_for_actuator(int(actuator_ids[i]))
+            f.write(
+                f"{points[i, 0]:.6f} {points[i, 1]:.6f} {points[i, 2]:.6f} "
+                f"{r:d} {g:d} {b:d}\n"
+            )
+    print(f"Exported init particles to '{out_path}'")
 
 
 def _colors_for_frame(s: int) -> np.ndarray:
@@ -142,12 +180,17 @@ def visualize_rollout(
             frame_gui.show(os.path.join(save_folder, f"{s:04d}.png"))
 
 
-def dump_particles_bin(iter_idx: int, *, start_s: int = 7, step_s: int = 2) -> None:
+def dump_particles_bin(
+    iter_idx: int,
+    *,
+    start_s: int = 7,
+    step_s: int = 2,
+    out_dir: str = "outputs",
+) -> None:
     """
-    Dump frames to `mpm3d/iterXXXX/####.bin` with the same binary layout as before.
+    Dump frames to `{out_dir}/iter{iter_idx:04d}/####.bin` with the same binary layout as before.
     """
     print("Writing particle data to disk...")
-    print("(Please be patient)...")
 
     kernels.forward()
     x_ = cfg.x.to_numpy()
@@ -156,7 +199,7 @@ def dump_particles_bin(iter_idx: int, *, start_s: int = 7, step_s: int = 2) -> N
     actuation_ = cfg.actuation.to_numpy()
     actuator_id_ = cfg.actuator_id.to_numpy()
 
-    folder = f"outputs/mpm3d/iter{iter_idx:04d}/"
+    folder = os.path.join(out_dir, f"iter{iter_idx:04d}/")
     os.makedirs(folder, exist_ok=True)
 
     for s in range(start_s, cfg.steps, step_s):
@@ -187,7 +230,7 @@ def dump_particles_bin(iter_idx: int, *, start_s: int = 7, step_s: int = 2) -> N
             cs.append(ti.rgb_to_hex((r, g, b)))
 
         data = np.array(xs + ys + zs + us + vs + ws + cs, dtype=np.float32)
-        fn = f"{folder}/{s:04d}.bin"
+        fn = os.path.join(folder, f"{s:04d}.bin")
         data.tofile(open(fn, "wb"))
         print(".", end="")
     print()

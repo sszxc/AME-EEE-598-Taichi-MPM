@@ -247,6 +247,9 @@ def init(
     x_: ti.types.ndarray(element_dim=1),
     actuator_id_arr: ti.types.ndarray(),
     particle_type_arr: ti.types.ndarray(),
+    root_id_arr: ti.types.ndarray(),
+    segment_id_arr: ti.types.ndarray(),
+    actuator_dir_arr: ti.types.ndarray(element_dim=1),
 ):
     for i, j in ti.ndrange(cfg.n_actuators, cfg.n_sin_waves):
         cfg.weights[i, j] = ti.randn() * 0.01
@@ -256,4 +259,9 @@ def init(
         cfg.F[0, i] = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
         cfg.actuator_id[i] = actuator_id_arr[i]
         cfg.particle_type[i] = particle_type_arr[i]
+        cfg.root_id[i] = root_id_arr[i]
+        cfg.segment_id[i] = segment_id_arr[i]
+
+    for i in range(cfg.n_actuators):
+        cfg.actuator_dir[i] = actuator_dir_arr[i]
 

@@ -21,11 +21,18 @@ Usage (from repo root):
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 from pathlib import Path
 
 import numpy as np
 import taichi as ti
+
+_SRC_DIR = Path(__file__).resolve().parent.parent
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+
+from utils.camera import FixedLookatCamera
 
 
 def _list_bin_frames(folder: Path) -> list[Path]:
@@ -70,13 +77,34 @@ def _load_frame(frame_path: Path, n_particles: int) -> tuple[np.ndarray, np.ndar
 
 
 def _preload_rollout(
-    frames: list[Path], n_particles: int
-) -> tuple[np.ndarray, np.ndarray]:
-    all_pos = np.empty((len(frames), n_particles, 3), dtype=np.float32)
-    all_col = np.empty((len(frames), n_particles, 3), dtype=np.float32)
+    frames: list[Path],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    """
+    Preload all frames while allowing the particle count to change over time.
+
+    Some rollouts write only "active" particles per frame (variable N). For
+    visualization we pad each frame to N_max and move unused slots offscreen.
+    """
+    n_per_frame = np.asarray([_infer_n_particles(fp) for fp in frames], dtype=np.int32)
+    n_max = int(n_per_frame.max(initial=0))
+    if n_max <= 0:
+        raise ValueError("Could not infer a positive particle count from frames.")
+
+    # Allocate padded arrays [T, N_max, 3].
+    all_pos = np.empty((len(frames), n_max, 3), dtype=np.float32)
+    all_col = np.empty((len(frames), n_max, 3), dtype=np.float32)
+
+    # Fill defaults: move unused particles far away; color doesn't matter then.
+    all_pos[...] = np.array([-10.0, -10.0, -10.0], dtype=np.float32)
+    all_col[...] = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+
     for i, fp in enumerate(frames):
-        all_pos[i], all_col[i] = _load_frame(fp, n_particles)
-    return all_pos, all_col
+        n_i = int(n_per_frame[i])
+        pos_i, col_i = _load_frame(fp, n_i)
+        all_pos[i, :n_i] = pos_i
+        all_col[i, :n_i] = col_i
+
+    return all_pos, all_col, n_per_frame, n_max
 
 
 def _make_ground_grid_segments(
@@ -193,12 +221,16 @@ def main() -> None:
         raise SystemExit(f"Not a directory: {folder}")
 
     frames = _list_bin_frames(folder)
-    n_particles = _infer_n_particles(frames[0])
+    all_pos, all_col, n_per_frame, n_particles = _preload_rollout(frames)
     print(f"[visualize_output] folder    = {folder}")
     print(f"[visualize_output] #frames   = {len(frames)}")
     print(f"[visualize_output] #particles= {n_particles}")
-
-    all_pos, all_col = _preload_rollout(frames, n_particles)
+    if int(n_per_frame.min(initial=n_particles)) != int(n_per_frame.max(initial=n_particles)):
+        print(
+            "[visualize_output] warning   = particle count varies across frames "
+            f"(min={int(n_per_frame.min())}, max={int(n_per_frame.max())}); "
+            "visualization will pad smaller frames."
+        )
 
     ti.init(arch=ti.gpu)
 
@@ -227,7 +259,7 @@ def main() -> None:
     canvas = window.get_canvas()
     canvas.set_background_color(tuple(float(c) for c in args.bg))
     scene = ti.ui.Scene()
-    camera = ti.ui.Camera()
+    camera = FixedLookatCamera()
 
     # Simulation domain is [0,1]^3; pick a pleasant isometric-ish initial view.
     camera.position(1.8, 1.3, 1.8)
@@ -257,8 +289,8 @@ def main() -> None:
         pos_field.from_numpy(all_pos[frame_idx])
         col_field.from_numpy(all_col[frame_idx])
 
-        # Mouse + WASD camera navigation (RMB drag to rotate).
-        camera.track_user_inputs(window, movement_speed=0.03, hold_key=ti.ui.RMB)
+        # Mouse + WASD camera navigation (RMB drag orbits around the initial look-at).
+        camera.track_user_inputs_fixed_lookat(window, movement_speed=0.03, hold_key=ti.ui.RMB)
         scene.set_camera(camera)
         scene.ambient_light((0.7, 0.7, 0.7))
         scene.point_light(pos=(2.0, 2.5, 2.0), color=(1.0, 1.0, 1.0))

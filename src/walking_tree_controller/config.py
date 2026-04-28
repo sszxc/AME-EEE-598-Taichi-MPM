@@ -24,14 +24,16 @@ inv_dx = 1 / dx
 dt = 2e-3
 p_vol = 1
 E = 10
-# TODO: update
-mu = E
-la = E
-max_steps = 1024
-steps = 1024
+trunk_mu = 70
+trunk_la = 70
+root_mu = 40
+root_la = 40
+max_steps = 256
+steps = 256
 gravity = 10
 target = [0.8, 0.2, 0.2]
 use_apic = False
+enable_grad = True
 
 # ---- Actuation parameters ----
 n_sin_waves = 4
@@ -68,7 +70,10 @@ x_avg = vec()
 actuation = scalar()
 
 
-def allocate_fields() -> None:
+def allocate_fields(*, enable_gradients: bool = True) -> None:
+    global enable_grad
+    enable_grad = bool(enable_gradients)
+
     ti.root.dense(ti.ij, (n_actuators, n_sin_waves)).place(weights)
     ti.root.dense(ti.i, n_actuators).place(bias)
 
@@ -80,5 +85,6 @@ def allocate_fields() -> None:
     ti.root.place(loss, x_avg)
     ti.root.dense(ti.ij, (visualize_resolution, visualize_resolution)).place(screen)
 
-    ti.root.lazy_grad()
+    if enable_grad:
+        ti.root.lazy_grad()
 

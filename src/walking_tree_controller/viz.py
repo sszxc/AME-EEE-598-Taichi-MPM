@@ -240,19 +240,22 @@ def dump_mesh_sequence(
     start_s: int = 7,
     step_s: int = 2,
     out_dir: str = "outputs",
+    name: str | None = None,
     mesh_res: int = 64,
     mesh_sigma: float = 1.25,
     mesh_level_ratio: float = 0.08,
 ) -> None:
     """
-    Dump marching-cubes meshes to `{out_dir}/iter{iter_idx:04d}_mesh/####.ply` (binary).
+    Dump marching-cubes meshes to `{out_dir}/{name}_mesh/####.ply` (binary).
     """
     print("Writing mesh data to disk...")
 
     kernels.forward()
     x_ = cfg.x.to_numpy()
 
-    folder = os.path.join(out_dir, f"iter{iter_idx:04d}_mesh/")
+    if name is None:
+        name = f"iter{iter_idx:04d}"
+    folder = os.path.join(out_dir, f"{name}_mesh/")
     os.makedirs(folder, exist_ok=True)
 
     for s in tqdm(
@@ -391,9 +394,10 @@ def dump_particles_bin(
     start_s: int = 7,
     step_s: int = 2,
     out_dir: str = "outputs",
+    name: str | None = None,
 ) -> None:
     """
-    Dump frames to `{out_dir}/iter{iter_idx:04d}_particle/####.bin` with the same binary layout as before.
+    Dump frames to `{out_dir}/{name}_particle/####.bin` with the same binary layout as before.
     """
     print("Writing particle data to disk...")
 
@@ -404,7 +408,9 @@ def dump_particles_bin(
     actuation_ = cfg.actuation.to_numpy()
     actuator_id_ = cfg.actuator_id.to_numpy()
 
-    folder = os.path.join(out_dir, f"iter{iter_idx:04d}_particle/")
+    if name is None:
+        name = f"iter{iter_idx:04d}"
+    folder = os.path.join(out_dir, f"{name}_particle/")
     os.makedirs(folder, exist_ok=True)
 
     for s in tqdm(

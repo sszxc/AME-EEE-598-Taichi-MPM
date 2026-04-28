@@ -178,7 +178,7 @@ class TreePlant:
         self.trunk_height = 0.5
         self.trunk_base_radius = 0.09
         self.trunk_tip_radius = 0.04
-        self.branch_depth = 1  # 2
+        self.branch_depth = 0  # 2
         self.branch_length_decay = 0.58
         self.branch_radius_decay = 0.48
         self.branches_per_level = 3

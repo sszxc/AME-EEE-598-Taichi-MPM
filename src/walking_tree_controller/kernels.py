@@ -24,9 +24,10 @@ def clear_grid():
     for i, j, k in cfg.grid_m_in:
         cfg.grid_v_in[i, j, k] = [0, 0, 0]
         cfg.grid_m_in[i, j, k] = 0
-        cfg.grid_v_in.grad[i, j, k] = [0, 0, 0]
-        cfg.grid_m_in.grad[i, j, k] = 0
-        cfg.grid_v_out.grad[i, j, k] = [0, 0, 0]
+        if ti.static(cfg.enable_grad):
+            cfg.grid_v_in.grad[i, j, k] = [0, 0, 0]
+            cfg.grid_m_in.grad[i, j, k] = 0
+            cfg.grid_v_out.grad[i, j, k] = [0, 0, 0]
 
 
 @ti.kernel
@@ -75,7 +76,14 @@ def p2g(f: ti.i32):
             cauchy = ti.Matrix(ident) * (J - 1) * cfg.E
         else:
             mass = 1
-            cauchy = cfg.mu * (new_F @ new_F.transpose()) + ti.Matrix(ident) * (cfg.la * ti.log(J) - cfg.mu)
+            local_mu = cfg.trunk_mu
+            local_la = cfg.trunk_la
+            if cfg.root_id[p] >= 0:
+                local_mu = cfg.root_mu
+                local_la = cfg.root_la
+            cauchy = local_mu * (new_F @ new_F.transpose()) + ti.Matrix(ident) * (
+                local_la * ti.log(J) - local_mu
+            )
         cauchy += new_F @ A @ new_F.transpose()
         stress = -(cfg.dt * cfg.p_vol * 4 * cfg.inv_dx * cfg.inv_dx) * cauchy
         affine = stress + mass * cfg.C[f, p]
